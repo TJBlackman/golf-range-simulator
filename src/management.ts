@@ -1,0 +1,600 @@
+export const HOPPER_CAPACITY = 100;
+export const INITIAL_RESERVE = 84;
+export const GOLFER_COUNT = 7;
+export const MAX_BAYS = 12;
+export const STARTING_CASH = 20;
+export const STARTING_REPUTATION = 60;
+export const GAME_OVER_SECONDS = 30;
+export const TIP_STREAK = 10;
+export const STOCK_BUNDLE = 50;
+export const WALKOUT_SECONDS = 4;
+/** Range length per tier, in yards. */
+export const RANGE_TIERS = [100, 150, 200, 250, 300];
+/** Shot interval multiplier per range tier: short ranges play slow. */
+export const PACE = [2, 1.65, 1.35, 1.15, 1];
+
+export type SpillCause = "obstacle" | "ball";
+export type GolferType = "casual" | "family" | "grinder" | "pro";
+export type GolferStatus = "playing" | "leaving" | "empty";
+
+export type GolferProfile = {
+  name: string;
+  /** Dollars earned per ball hit. */
+  pay: number;
+  /** Seconds between shots. */
+  interval: number;
+  /** Patience lost per second while waiting for balls. */
+  drain: number;
+  /** Patience regained per second while hitting. */
+  recover: number;
+  /** Dollars tipped every TIP_STREAK uninterrupted shots. */
+  tip: number;
+  /** Minimum star rating before this type shows up. */
+  minStars: number;
+  /** Minimum range length in yards before this type shows up. */
+  minYards: number;
+  weight: number;
+  /** Polo colour in the 3D scene. */
+  color: string;
+};
+
+export const GOLFER_TYPES: Record<GolferType, GolferProfile> = {
+  casual: {
+    name: "Casual",
+    pay: 0.25,
+    interval: 3.8,
+    drain: 2.5,
+    recover: 2.4,
+    tip: 1.5,
+    minStars: 0,
+    minYards: 0,
+    weight: 4,
+    color: "#e07a2f",
+  },
+  family: {
+    name: "Family",
+    pay: 0.15,
+    interval: 4.4,
+    drain: 4,
+    recover: 2,
+    tip: 0.5,
+    minStars: 0,
+    minYards: 0,
+    weight: 2,
+    color: "#4f9e5a",
+  },
+  grinder: {
+    name: "Grinder",
+    pay: 0.35,
+    interval: 2.6,
+    drain: 3.5,
+    recover: 2.2,
+    tip: 2,
+    minStars: 2.5,
+    minYards: 200,
+    weight: 3,
+    color: "#c7473b",
+  },
+  pro: {
+    name: "Pro",
+    pay: 0.6,
+    interval: 3.2,
+    drain: 5,
+    recover: 1.8,
+    tip: 5,
+    minStars: 4,
+    minYards: 250,
+    weight: 3,
+    color: "#2f3a4f",
+  },
+};
+
+export type GolferState = {
+  id: number;
+  type: GolferType;
+  status: GolferStatus;
+  patience: number;
+  waiting: boolean;
+  nextShot: number;
+  shots: number;
+  streak: number;
+  /** Balls held in the bay's own dispenser. */
+  buffer: number;
+  /** Leaving: when the walkout ends. Empty: when the next golfer arrives. */
+  until: number;
+};
+export type ShotOrder = { golfer: number; number: number; lost: boolean };
+export type SimEvent =
+  | { kind: "walkout" | "arrival"; golfer: number; type: GolferType }
+  | { kind: "tip"; golfer: number; type: GolferType; amount: number }
+  | { kind: "over" };
+
+export type UpgradeCategory = "cart" | "range" | "supply";
+export type UpgradeId =
+  | "range"
+  | "engine"
+  | "hopper"
+  | "collector"
+  | "cage"
+  | "bumper"
+  | "bays"
+  | "dispensers"
+  | "depot"
+  | "clearing"
+  | "nets"
+  | "helper"
+  | "stock";
+export type Upgrade = {
+  id: UpgradeId;
+  name: string;
+  category: UpgradeCategory;
+  blurb: string;
+  /** One price per tier. Empty for repeatable purchases. */
+  costs: number[];
+  /** What each level gives you, index 0 being stock. */
+  levels: string[];
+  /** Fixed price for purchases that never max out. */
+  repeat?: number;
+};
+
+export const ENGINE_SPEEDS = [9, 11.5, 14, 17];
+export const HOPPER_CAPACITIES = [HOPPER_CAPACITY, 150, 220];
+export const COLLECTOR_HALF_WIDTHS = [1.6, 2.6, 3.6];
+export const CAGE_RATES = [0.15, 0.08, 0];
+export const BUMPER_RATES = [0.5, 0.3, 0.15];
+export const BAY_COUNTS = [GOLFER_COUNT, 9, MAX_BAYS];
+export const DISPENSER_BUFFERS = [0, 6, 12];
+export const LOSS_RATES = [0.04, 0.02, 0.005];
+
+export const UPGRADES: Upgrade[] = [
+  {
+    id: "engine",
+    name: "Engine",
+    category: "cart",
+    blurb: "Top speed and acceleration.",
+    costs: [40, 90, 160],
+    levels: ["Stock, 9 m/s", "Tuned, 11.5 m/s", "Turbo, 14 m/s", "Race, 17 m/s"],
+  },
+  {
+    id: "hopper",
+    name: "Hopper",
+    category: "cart",
+    blurb: "Balls the cart can carry.",
+    costs: [50, 120],
+    levels: ["100 balls", "150 balls", "220 balls"],
+  },
+  {
+    id: "collector",
+    name: "Collector",
+    category: "cart",
+    blurb: "Wider pickup swath on the front.",
+    costs: [60, 150],
+    levels: ["Single disc", "Double gang", "Triple gang"],
+  },
+  {
+    id: "cage",
+    name: "Cage",
+    category: "cart",
+    blurb: "Shields the hopper from flying balls.",
+    costs: [45, 100],
+    levels: ["Ball strike spills 15%", "Spills 8%", "Spills nothing"],
+  },
+  {
+    id: "bumper",
+    name: "Bumper",
+    category: "cart",
+    blurb: "Softens obstacle collisions.",
+    costs: [45, 100],
+    levels: ["Collision spills 50%", "Spills 30%", "Spills 15%"],
+  },
+  {
+    id: "range",
+    name: "Range length",
+    category: "range",
+    blurb: "A longer range brings faster hitters and better paying golfers.",
+    costs: [120, 220, 360, 520],
+    levels: [
+      "100 yards, slow play",
+      "150 yards",
+      "200 yards, grinders arrive",
+      "250 yards, pros arrive",
+      "300 yards, full pace",
+    ],
+  },
+  {
+    id: "bays",
+    name: "Hitting bays",
+    category: "range",
+    blurb: "More bays, more golfers, more balls on the ground.",
+    costs: [150, 320],
+    levels: ["7 bays", "9 bays", "12 bays"],
+  },
+  {
+    id: "dispensers",
+    name: "Bay dispensers",
+    category: "range",
+    blurb: "Each bay keeps its own buffer of balls.",
+    costs: [120, 220],
+    levels: ["No buffer", "6 balls per bay", "12 balls per bay"],
+  },
+  {
+    id: "depot",
+    name: "Second depot",
+    category: "range",
+    blurb: "A return point out on the range to cut travel.",
+    costs: [200],
+    levels: ["One depot", "Two depots"],
+  },
+  {
+    id: "clearing",
+    name: "Clear obstacles",
+    category: "range",
+    blurb: "Remove hazards from the field.",
+    costs: [60, 120],
+    levels: ["Log and boulders in place", "Log removed", "Boulders removed"],
+  },
+  {
+    id: "nets",
+    name: "Nets",
+    category: "range",
+    blurb: "Fewer balls sliced out of bounds.",
+    costs: [90, 180],
+    levels: ["4% of shots lost", "2% lost", "0.5% lost"],
+  },
+  {
+    id: "helper",
+    name: "Helper cart",
+    category: "range",
+    blurb: "A driverless cart that sweeps lanes and returns on its own.",
+    costs: [400],
+    levels: ["No helper", "Helper on duty"],
+  },
+  {
+    id: "stock",
+    name: "Buy balls",
+    category: "supply",
+    blurb: `${STOCK_BUNDLE} fresh balls straight into the depot.`,
+    costs: [],
+    levels: ["Always available"],
+    repeat: 20,
+  },
+];
+
+export function spillAmount(
+  hopper: number,
+  cause: SpillCause,
+  rate = cause === "obstacle" ? BUMPER_RATES[0] : CAGE_RATES[0],
+): number {
+  return Math.min(hopper, Math.ceil(hopper * rate));
+}
+
+const INITIAL_LINEUP: GolferType[] = [
+  "casual",
+  "family",
+  "casual",
+  "casual",
+  "casual",
+  "family",
+  "casual",
+];
+const clamp = (n: number, low: number, high: number) =>
+  Math.max(low, Math.min(high, n));
+
+export class RangeManagement {
+  reserve = INITIAL_RESERVE;
+  hopper = 0;
+  collected = 0;
+  returned = 0;
+  spilled = 0;
+  deliveries = 0;
+  obstacleHits = 0;
+  ballHits = 0;
+  ballsHit = 0;
+  ballsLost = 0;
+  helperReturned = 0;
+  time = 0;
+  cash = STARTING_CASH;
+  earned = 0;
+  tips = 0;
+  spent = 0;
+  reputation = STARTING_REPUTATION;
+  walkouts = 0;
+  arrivals = 0;
+  served = GOLFER_COUNT;
+  emptyFor = 0;
+  over = false;
+  readonly levels: Record<UpgradeId, number> = {
+    range: 0,
+    engine: 0,
+    hopper: 0,
+    collector: 0,
+    cage: 0,
+    bumper: 0,
+    bays: 0,
+    dispensers: 0,
+    depot: 0,
+    clearing: 0,
+    nets: 0,
+    helper: 0,
+    stock: 0,
+  };
+  readonly golfers: GolferState[] = INITIAL_LINEUP.map((type, id) => ({
+    id,
+    type,
+    status: "playing",
+    patience: 100,
+    waiting: false,
+    nextShot: 0.6 + id * 0.48,
+    shots: 0,
+    streak: 0,
+    buffer: 0,
+    until: 0,
+  }));
+  private events: SimEvent[] = [];
+
+  private readonly random: () => number;
+
+  constructor(random: () => number = Math.random) {
+    this.random = random;
+  }
+
+  get bays() {
+    return BAY_COUNTS[this.levels.bays];
+  }
+  get rangeYards() {
+    return RANGE_TIERS[this.levels.range];
+  }
+  get pace() {
+    return PACE[this.levels.range];
+  }
+  get hopperCapacity() {
+    return HOPPER_CAPACITIES[this.levels.hopper];
+  }
+  get maxSpeed() {
+    return ENGINE_SPEEDS[this.levels.engine];
+  }
+  get collectorHalfWidth() {
+    return COLLECTOR_HALF_WIDTHS[this.levels.collector];
+  }
+  get dispenserBuffer() {
+    return DISPENSER_BUFFERS[this.levels.dispensers];
+  }
+  get lossRate() {
+    return LOSS_RATES[this.levels.nets];
+  }
+  get stars() {
+    return this.reputation / 20;
+  }
+  get present() {
+    return this.golfers.filter((g) => g.status === "playing");
+  }
+  get satisfaction() {
+    const present = this.present;
+    if (!present.length) return 0;
+    return Math.round(
+      present.reduce((sum, g) => sum + g.patience, 0) / present.length,
+    );
+  }
+  get waiting() {
+    return this.golfers.filter((g) => g.status === "playing" && g.waiting)
+      .length;
+  }
+  /** Balls available to golfers, at the depot and in bay dispensers. */
+  get supply() {
+    return this.reserve + this.golfers.reduce((sum, g) => sum + g.buffer, 0);
+  }
+
+  takeEvents(): SimEvent[] {
+    return this.events.splice(0);
+  }
+
+  spillRate(cause: SpillCause) {
+    return cause === "obstacle"
+      ? BUMPER_RATES[this.levels.bumper]
+      : CAGE_RATES[this.levels.cage];
+  }
+
+  /** Seconds until a new golfer fills an empty bay at the current rating. */
+  arrivalDelay() {
+    const t = clamp((this.stars - 1) / 4, 0, 1);
+    return 36 - 32 * t;
+  }
+
+  update(dt: number): ShotOrder[] {
+    if (this.over) return [];
+    this.time += dt;
+    const shots: ShotOrder[] = [];
+    for (const golfer of this.golfers) {
+      if (golfer.status === "leaving") {
+        if (this.time >= golfer.until) {
+          golfer.status = "empty";
+          golfer.until = this.time + this.arrivalDelay();
+        }
+        continue;
+      }
+      if (golfer.status === "empty") {
+        if (this.stars >= 1 && this.time >= golfer.until) this.arrive(golfer);
+        continue;
+      }
+      const profile = GOLFER_TYPES[golfer.type];
+      if (this.time >= golfer.nextShot) {
+        if (golfer.buffer < this.dispenserBuffer && this.reserve > 0) {
+          golfer.buffer++;
+          this.reserve--;
+        }
+        if (this.reserve > 0 || golfer.buffer > 0) {
+          if (this.reserve > 0) this.reserve--;
+          else golfer.buffer--;
+          golfer.shots++;
+          golfer.streak++;
+          golfer.waiting = false;
+          golfer.nextShot =
+            this.time + profile.interval * this.pace + golfer.id * 0.03;
+          this.ballsHit++;
+          this.earn(profile.pay);
+          if (golfer.streak % TIP_STREAK === 0 && golfer.patience >= 70) {
+            this.earn(profile.tip);
+            this.tips += profile.tip;
+            this.events.push({
+              kind: "tip",
+              golfer: golfer.id,
+              type: golfer.type,
+              amount: profile.tip,
+            });
+          }
+          const lost = this.random() < this.lossRate;
+          if (lost) this.ballsLost++;
+          shots.push({ golfer: golfer.id, number: golfer.shots, lost });
+        } else if (!golfer.waiting) {
+          golfer.waiting = true;
+          golfer.streak = 0;
+        }
+      }
+      golfer.patience = clamp(
+        golfer.patience +
+          dt * (golfer.waiting ? -profile.drain : profile.recover),
+        0,
+        100,
+      );
+      if (golfer.patience <= 0) this.walkout(golfer);
+    }
+    const present = this.present;
+    const target = present.length
+      ? present.reduce((sum, g) => sum + g.patience, 0) / present.length
+      : this.supply >= 20
+        ? 45
+        : 0;
+    this.reputation += (target - this.reputation) * Math.min(1, dt * 0.05);
+    this.reputation = clamp(this.reputation, 0, 100);
+    const anyone = this.golfers.some((g) => g.status !== "empty");
+    if (!anyone && this.stars < 1) this.emptyFor += dt;
+    else this.emptyFor = 0;
+    if (this.emptyFor >= GAME_OVER_SECONDS) {
+      this.over = true;
+      this.events.push({ kind: "over" });
+    }
+    return shots;
+  }
+
+  private earn(amount: number) {
+    this.cash += amount;
+    this.earned += amount;
+  }
+
+  private walkout(golfer: GolferState) {
+    golfer.status = "leaving";
+    golfer.waiting = false;
+    golfer.until = this.time + WALKOUT_SECONDS;
+    this.walkouts++;
+    this.reputation = Math.max(0, this.reputation - 5);
+    this.events.push({ kind: "walkout", golfer: golfer.id, type: golfer.type });
+  }
+
+  private arrive(golfer: GolferState) {
+    golfer.type = this.pickType();
+    golfer.status = "playing";
+    golfer.patience = 100;
+    golfer.waiting = false;
+    golfer.shots = 0;
+    golfer.streak = 0;
+    golfer.buffer = 0;
+    golfer.nextShot = this.time + 2.5;
+    this.arrivals++;
+    this.served++;
+    this.events.push({ kind: "arrival", golfer: golfer.id, type: golfer.type });
+  }
+
+  private pickType(): GolferType {
+    const stars = this.stars;
+    const eligible = (Object.keys(GOLFER_TYPES) as GolferType[]).filter(
+      (type) =>
+        GOLFER_TYPES[type].minStars <= stars &&
+        GOLFER_TYPES[type].minYards <= this.rangeYards,
+    );
+    const total = eligible.reduce((sum, t) => sum + GOLFER_TYPES[t].weight, 0);
+    let roll = this.random() * total;
+    for (const type of eligible) {
+      roll -= GOLFER_TYPES[type].weight;
+      if (roll <= 0) return type;
+    }
+    return eligible[eligible.length - 1];
+  }
+
+  /** Price of the next tier, or undefined when maxed out. */
+  price(id: UpgradeId): number | undefined {
+    const upgrade = UPGRADES.find((u) => u.id === id)!;
+    return upgrade.repeat ?? upgrade.costs[this.levels[id]];
+  }
+
+  buy(id: UpgradeId): "ok" | "maxed" | "poor" {
+    const cost = this.price(id);
+    if (cost === undefined) return "maxed";
+    if (this.cash < cost) return "poor";
+    this.cash -= cost;
+    this.spent += cost;
+    if (id === "stock") {
+      this.reserve += STOCK_BUNDLE;
+      this.levels.stock++;
+      return "ok";
+    }
+    this.levels[id]++;
+    if (id === "bays") this.openBays();
+    return "ok";
+  }
+
+  private openBays() {
+    while (this.golfers.length < this.bays)
+      this.golfers.push({
+        id: this.golfers.length,
+        type: "casual",
+        status: "empty",
+        patience: 0,
+        waiting: false,
+        nextShot: 0,
+        shots: 0,
+        streak: 0,
+        buffer: 0,
+        until: this.time + 3,
+      });
+  }
+
+  collect(count: number): number {
+    const accepted = Math.max(
+      0,
+      Math.min(Math.floor(count), this.hopperCapacity - this.hopper),
+    );
+    this.hopper += accepted;
+    this.collected += accepted;
+    return accepted;
+  }
+
+  unload(): number {
+    const count = this.hopper;
+    if (!count) return 0;
+    this.reserve += count;
+    this.returned += count;
+    this.deliveries++;
+    this.hopper = 0;
+    // A fresh delivery gives the waiting golfers some immediate reassurance.
+    for (const golfer of this.golfers)
+      if (golfer.status === "playing")
+        golfer.patience = Math.min(100, golfer.patience + 8);
+    this.reputation = Math.min(100, this.reputation + 6);
+    return count;
+  }
+
+  deliverHelper(count: number) {
+    if (count <= 0) return;
+    this.reserve += count;
+    this.helperReturned += count;
+  }
+
+  spill(cause: SpillCause): number {
+    const count = spillAmount(this.hopper, cause, this.spillRate(cause));
+    this.hopper -= count;
+    this.spilled += count;
+    if (cause === "obstacle") this.obstacleHits++;
+    else this.ballHits++;
+    return count;
+  }
+}

@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.vite/
+*.log
+*.blend1
+assets/BUILD_COMPLETE.json
+assets/EXPORT_COMPLETE.json
+assets/BUILD_ERROR.txt

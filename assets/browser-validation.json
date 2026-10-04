@@ -1,0 +1,153 @@
+{
+  "all": [
+    {
+      "animationGroups": [],
+      "id": "tractor-picker",
+      "meshCount": 130,
+      "vertices": 20160
+    },
+    {
+      "animationGroups": [],
+      "id": "golf-ball",
+      "meshCount": 1,
+      "vertices": 115
+    },
+    {
+      "animationGroups": [],
+      "id": "target-flag",
+      "meshCount": 3,
+      "vertices": 164
+    },
+    {
+      "animationGroups": [],
+      "id": "distance-marker-50",
+      "meshCount": 5,
+      "vertices": 2190
+    },
+    {
+      "animationGroups": [],
+      "id": "distance-marker-100",
+      "meshCount": 5,
+      "vertices": 2282
+    },
+    {
+      "animationGroups": [],
+      "id": "distance-marker-150",
+      "meshCount": 5,
+      "vertices": 2208
+    },
+    {
+      "animationGroups": [],
+      "id": "fence-section",
+      "meshCount": 6,
+      "vertices": 896
+    },
+    {
+      "animationGroups": [],
+      "id": "tree-pine",
+      "meshCount": 4,
+      "vertices": 144
+    },
+    {
+      "animationGroups": [],
+      "id": "tree-broadleaf",
+      "meshCount": 6,
+      "vertices": 498
+    },
+    {
+      "animationGroups": [],
+      "id": "range-ground",
+      "meshCount": 19,
+      "vertices": 1464
+    },
+    {
+      "animationGroups": [],
+      "id": "ball-depot",
+      "meshCount": 16,
+      "vertices": 5014
+    },
+    {
+      "animationGroups": [],
+      "id": "hitting-bay",
+      "meshCount": 18,
+      "vertices": 3480
+    },
+    {
+      "animationGroups": [
+        {
+          "name": "Walk",
+          "targets": 3
+        }
+      ],
+      "id": "goose",
+      "meshCount": 15,
+      "vertices": 2380
+    },
+    {
+      "animationGroups": [
+        {
+          "name": "Walk",
+          "targets": 4
+        }
+      ],
+      "id": "fox",
+      "meshCount": 25,
+      "vertices": 3014
+    },
+    {
+      "animationGroups": [
+        {
+          "name": "Walk",
+          "targets": 4
+        }
+      ],
+      "id": "deer",
+      "meshCount": 29,
+      "vertices": 3744
+    },
+    {
+      "animationGroups": [
+        {
+          "name": "PracticeSwing",
+          "targets": 1
+        }
+      ],
+      "id": "golfer",
+      "meshCount": 18,
+      "vertices": 2896
+    }
+  ],
+  "animations": [
+    {
+      "clip": "Walk",
+      "id": "goose",
+      "poseChanges": true,
+      "targets": 3
+    },
+    {
+      "clip": "Walk",
+      "id": "fox",
+      "poseChanges": true,
+      "targets": 4
+    },
+    {
+      "clip": "Walk",
+      "id": "deer",
+      "poseChanges": true,
+      "targets": 4
+    },
+    {
+      "clip": "PracticeSwing",
+      "id": "golfer",
+      "poseChanges": true,
+      "targets": 1
+    }
+  ],
+  "engine": "Babylon.js 9.29.0",
+  "forwardCheck": [
+    0,
+    0.6499999761581421,
+    1.4800000190734863
+  ],
+  "webgl": 2
+}
