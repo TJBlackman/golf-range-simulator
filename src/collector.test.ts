@@ -11,7 +11,6 @@ import {
   STARTING_CASH,
   STOCK_BUNDLE,
   HOPPER_CAPACITY,
-  FULL_LOAD_BONUS,
   WALKOUT_SECONDS,
   BAY_COOLDOWN_SECONDS,
   getGolferMood,
@@ -548,35 +547,55 @@ test("obstacles spill 50% and ball strikes spill 15%, rounded up, until the bump
   assert.equal(sim.spill("ball"), 0);
 });
 
-test("delivering a completely full hopper pays a bonus, and the bar moves with each hopper tier", () => {
+test("full hopper delivery bonuses increase with each tier, and partial loads earn no bonus", () => {
   const sim = new RangeManagement(seeded());
-  const cash = sim.cash, earned = sim.earned;
-  sim.collect(HOPPER_CAPACITY - 1);
-  assert.deepEqual(sim.unload(), { count: HOPPER_CAPACITY - 1, bonus: 0 });
-  assert.equal(sim.cash, cash);
-  assert.equal(sim.fullLoads, 0);
-  sim.collect(500);
-  assert.equal(sim.hopper, HOPPER_CAPACITY);
-  assert.deepEqual(sim.unload(), { count: HOPPER_CAPACITY, bonus: FULL_LOAD_BONUS });
-  assert.equal(sim.cash, cash + FULL_LOAD_BONUS);
-  assert.equal(sim.earned, earned + FULL_LOAD_BONUS);
-  assert.equal(sim.bonuses, FULL_LOAD_BONUS);
-  assert.equal(sim.fullLoads, 1);
-  assert.equal(sim.deliveries, 2);
-  assert.deepEqual(sim.unload(), { count: 0, bonus: 0 });
   sim.cash = 1000;
-  assert.equal(sim.buy("hopper"), "ok");
-  sim.collect(HOPPER_CAPACITY);
-  assert.deepEqual(sim.unload(), { count: HOPPER_CAPACITY, bonus: 0 });
-  sim.collect(100);
-  assert.deepEqual(sim.unload(), { count: 100, bonus: FULL_LOAD_BONUS });
-  assert.equal(sim.bonuses, FULL_LOAD_BONUS * 2);
-  assert.equal(sim.fullLoads, 2);
+  const tiers = [
+    { capacity: 75, bonus: 5 },
+    { capacity: 100, bonus: 10 },
+    { capacity: 125, bonus: 15 },
+    { capacity: 150, bonus: 20 },
+  ];
+  let totalBonuses = 0;
+  for (const [tier, { capacity, bonus }] of tiers.entries()) {
+    if (tier > 0) {
+      sim.collect(sim.hopperCapacity);
+      assert.equal(sim.buy("hopper"), "ok");
+      const cash = sim.cash;
+      assert.deepEqual(sim.unload(), { count: tiers[tier - 1].capacity, bonus: 0 });
+      assert.equal(sim.cash, cash);
+    }
+    assert.equal(sim.hopperCapacity, capacity);
+    assert.equal(sim.fullLoadBonus, bonus);
+    const cash = sim.cash, earned = sim.earned;
+    sim.collect(capacity - 1);
+    assert.deepEqual(sim.unload(), { count: capacity - 1, bonus: 0 });
+    assert.equal(sim.cash, cash);
+    assert.equal(sim.earned, earned);
+    assert.equal(sim.bonuses, totalBonuses);
+    assert.equal(sim.fullLoads, tier);
+
+    sim.collect(500);
+    assert.equal(sim.hopper, capacity);
+    assert.deepEqual(sim.unload(), { count: capacity, bonus });
+    totalBonuses += bonus;
+    assert.equal(sim.cash, cash + bonus);
+    assert.equal(sim.earned, earned + bonus);
+    assert.equal(sim.bonuses, totalBonuses);
+    assert.equal(sim.fullLoads, tier + 1);
+    const deliveries = sim.deliveries;
+    assert.deepEqual(sim.unload(), { count: 0, bonus: 0 });
+    assert.equal(sim.cash, cash + bonus);
+    assert.equal(sim.bonuses, totalBonuses);
+    assert.equal(sim.fullLoads, tier + 1);
+    assert.equal(sim.deliveries, deliveries);
+  }
   const saved = sim.exportState();
   const copy = new RangeManagement();
   copy.restoreState(saved);
-  assert.equal(copy.bonuses, FULL_LOAD_BONUS * 2);
-  assert.equal(copy.fullLoads, 2);
+  assert.equal(copy.bonuses, 50);
+  assert.equal(copy.fullLoads, 4);
+  assert.equal(copy.fullLoadBonus, 20);
   const { bonuses: _b, fullLoads: _f, ...legacy } = saved;
   copy.restoreState(legacy);
   assert.equal(copy.bonuses, 0);
