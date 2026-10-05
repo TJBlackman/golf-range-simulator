@@ -6,7 +6,6 @@ export const GOLFER_COUNT = 7;
 export const MAX_BAYS = 12;
 export const STARTING_CASH = 20;
 export const STARTING_REPUTATION = 60;
-export const GAME_OVER_SECONDS = 30;
 export const TIP_STREAK = 10;
 export const STOCK_BUNDLE = 50;
 export const WALKOUT_SECONDS = 4;
@@ -298,9 +297,9 @@ const MANAGEMENT_NUMBERS = [
   "reserve", "hopper", "collected", "returned", "spilled", "deliveries",
   "obstacleHits", "ballHits", "ballsHit", "ballsLost", "helperReturned", "time",
   "cash", "earned", "tips", "spent", "reputation", "walkouts", "arrivals",
-  "served", "emptyFor", "bonuses", "fullLoads",
+  "served", "bonuses", "fullLoads",
 ] as const;
-const FRACTIONAL_STATE = new Set<string>(["time", "cash", "earned", "tips", "spent", "reputation", "emptyFor", "bonuses"]);
+const FRACTIONAL_STATE = new Set<string>(["time", "cash", "earned", "tips", "spent", "reputation", "bonuses"]);
 /** Stats added after the first saves shipped. Older saves load with these at zero. */
 const OPTIONAL_STATE = new Set<string>(["bonuses", "fullLoads"]);
 export type ManagementSnapshot = Record<typeof MANAGEMENT_NUMBERS[number], number> & {
@@ -394,7 +393,6 @@ export class RangeManagement {
   walkouts = 0;
   arrivals = 0;
   served = GOLFER_COUNT;
-  emptyFor = 0;
   over = false;
   readonly levels: Record<UpgradeId, number> = {
     range: 0,
@@ -500,6 +498,10 @@ export class RangeManagement {
   get stars() {
     return this.reputation / 20;
   }
+  /** Survival time in seconds; longer shifts score higher. */
+  get score() {
+    return this.time;
+  }
   get present() {
     return this.golfers.filter((g) => g.status === "playing");
   }
@@ -541,17 +543,23 @@ export class RangeManagement {
   }
 
   update(dt: number): ShotOrder[] {
-    if (this.over) return [];
+    if (this.over || this.finishIfEmpty()) return [];
+    // Stop the clock at the final departure, even if it falls inside this frame.
+    const departing = this.golfers.filter((g) => g.status === "leaving");
+    if (departing.length && !this.golfers.some((g) => g.status === "playing" || g.booked))
+      dt = Math.min(dt, Math.max(0, Math.max(...departing.map((g) => g.until)) - this.time));
     this.time += dt;
     const shots: ShotOrder[] = [];
-    for (const golfer of this.golfers) {
-      if (golfer.status === "leaving") {
-        if (this.time >= golfer.until) {
-          golfer.status = "empty";
-          golfer.until = this.time + this.arrivalDelay();
-        }
-        continue;
+    for (const golfer of departing) {
+      if (this.time >= golfer.until) {
+        golfer.status = "empty";
+        golfer.until = this.time + this.arrivalDelay();
       }
+    }
+    // Resolve departures before admitting anyone else: an empty range ends the shift.
+    if (this.finishIfEmpty()) return [];
+    for (const golfer of this.golfers) {
+      if (golfer.status === "leaving") continue;
       if (golfer.status === "empty") {
         if (this.stars >= 1 && this.time >= golfer.until) this.arrive(golfer);
         continue;
@@ -609,14 +617,15 @@ export class RangeManagement {
           : 0;
     this.reputation += (target - this.reputation) * Math.min(1, dt * 0.05);
     this.reputation = clamp(this.reputation, 0, 100);
-    const anyone = this.golfers.some((g) => g.status !== "empty" || g.booked);
-    if (!anyone && this.stars < 1) this.emptyFor += dt;
-    else this.emptyFor = 0;
-    if (this.emptyFor >= GAME_OVER_SECONDS) {
-      this.over = true;
-      this.events.push({ kind: "over" });
-    }
     return shots;
+  }
+
+  private finishIfEmpty() {
+    // Booked golfers protect the staggered opening before the first cart arrives.
+    if (this.golfers.some((g) => g.status !== "empty" || g.booked)) return false;
+    this.over = true;
+    this.events.push({ kind: "over" });
+    return true;
   }
 
   private earn(amount: number) {

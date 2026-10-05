@@ -68,6 +68,7 @@ $("#app").innerHTML = `
   <canvas id="range" aria-label="3D driving range with a drivable ball collector and autonomous golfers"></canvas>
   <div class="range-identity" aria-label="Pine Valley driving range"><div class="range-crest">${icon("flag", 21)}</div><div><strong>Pine Valley</strong><span id="range-conditions">100 YD RANGE · LIGHT BREEZE</span></div></div>
   <button id="pause" class="menu-button hud-surface" aria-label="Open game menu" aria-controls="pause-overlay" aria-expanded="false" title="Menu · Esc / P">${icon("menu", 18)}</button>
+  <aside class="score-hud hud-surface" aria-label="Survival time" title="Your score is survival time. Keep the range running as long as possible."><span class="stat-label">TIME</span><strong id="time-score">00:00</strong></aside>
   <div class="control-hints" aria-hidden="true"><span><kbd>W A S D</kbd> Drive</span><span><kbd>Space</kbd> Brake</span><span><kbd>C</kbd> Camera</span><span>Drag to look · Scroll to zoom</span></div>
 
   <aside class="game-hud hud-surface" aria-label="Range status">
@@ -96,8 +97,8 @@ $("#app").innerHTML = `
     <p class="menu-controls">WASD drive · Space brake · E return · B shop<br>Drag mouse to look · Scroll to zoom · C camera · Esc / P menu</p>
   </dialog>
 
-  <div id="loading-screen" class="welcome-overlay"><section class="welcome-card"><div class="welcome-emblem">${icon("flag", 24)}</div><span class="eyebrow">THE DRIVING RANGE</span><h2>Pine Valley.<em>A day's work, outdoors.</em></h2><p>Take the wheel. Keep the bays supplied. Build a better range, one collection at a time.</p><div class="welcome-rules"><div class="briefing-step"><span>01</span><div><strong>Collect & return</strong><p>Drive over loose balls. Stop at the depot and press <kbd>E</kbd> to unload.</p></div></div><div class="briefing-step"><span>02</span><div><strong>Earn & improve</strong><p>Golfers pay for every shot. Press <kbd>B</kbd> at the depot for equipment and range upgrades.</p></div></div><div class="briefing-step"><span>03</span><div><strong>Keep the range running</strong><p>Keep golfers supplied or they'll leave. Thirty seconds with every bay empty ends your shift.</p></div></div></div><div class="welcome-risks">Protect your load: collisions spill <b>50%</b>, ball strikes spill <b>15%</b>.</div><button id="start" class="primary-button" disabled><span id="loading-label">Preparing the range…</span>${icon("arrow", 18)}</button><div class="loading-track"><i id="loading-progress"></i></div><small id="loading-caption">Preparing the course and equipment</small><small id="best-score" class="best-score" hidden></small></section></div>
-  <div id="gameover-screen" class="welcome-overlay" hidden><section class="welcome-card"><div class="welcome-emblem">${icon("flag", 24)}</div><span class="eyebrow">SHIFT REPORT</span><h2>Day's end.</h2><p id="gameover-summary"></p><div class="menu-stats"><div><strong id="final-earned">$0</strong><span>Earned</span></div><div><strong id="final-served">0</strong><span>Golfers served</span></div><div><strong id="final-best">$0</strong><span>Best shift</span></div></div><button id="restart" class="primary-button">Start a new shift ${icon("reset", 18)}</button></section></div>
+  <div id="loading-screen" class="welcome-overlay"><section class="welcome-card"><div class="welcome-emblem">${icon("flag", 24)}</div><span class="eyebrow">THE DRIVING RANGE</span><h2>Pine Valley.<em>A day's work, outdoors.</em></h2><p>Take the wheel. Keep the bays supplied. Compete for the longest time on the range.</p><div class="welcome-rules"><div class="briefing-step"><span>01</span><div><strong>Collect & return</strong><p>Drive over loose balls. Stop at the depot and press <kbd>E</kbd> to unload.</p></div></div><div class="briefing-step"><span>02</span><div><strong>Earn & improve</strong><p>Golfers pay for every shot. Press <kbd>B</kbd> at the depot for equipment and range upgrades.</p></div></div><div class="briefing-step"><span>03</span><div><strong>Keep the range running</strong><p>The instant the last golfer leaves, your shift ends. Your score is survival time: the longest time wins.</p></div></div></div><div class="welcome-risks">Protect your load: collisions spill <b>50%</b>, ball strikes spill <b>15%</b>.</div><button id="start" class="primary-button" disabled><span id="loading-label">Preparing the range…</span>${icon("arrow", 18)}</button><div class="loading-track"><i id="loading-progress"></i></div><small id="loading-caption">Preparing the course and equipment</small><small id="best-score" class="best-score" hidden></small></section></div>
+  <div id="gameover-screen" class="welcome-overlay" hidden><section class="welcome-card"><div class="welcome-emblem">${icon("flag", 24)}</div><span class="eyebrow">SHIFT REPORT</span><h2>Day's end.</h2><p id="gameover-summary"></p><div class="menu-stats"><div><strong id="final-time">00:00</strong><span>Survival time</span></div><div><strong id="final-served">0</strong><span>Golfers served</span></div><div><strong id="final-best">00:00</strong><span>Best time</span></div></div><button id="restart" class="primary-button">Start a new shift ${icon("reset", 18)}</button></section></div>
   <dialog id="dialog"><button id="dialog-close" class="icon-button dialog-close" aria-label="Close dialog">${icon("close")}</button><div id="dialog-content"></div></dialog>
   <div id="error-screen" class="welcome-overlay" hidden><section class="welcome-card"><span class="eyebrow">RANGE UNAVAILABLE</span><h2>Unable to open.</h2><p id="error-message"></p><button id="reload" class="primary-button">Reload range ${icon("reset", 18)}</button></section></div>
 </main>`;
@@ -213,6 +214,11 @@ function atDepot() {
 const money = (amount: number) => `$${Math.floor(amount)}`;
 const clock = (seconds: number) =>
   `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(Math.floor(seconds) % 60).padStart(2, "0")}`;
+function bestTime() {
+  // Keep time records separate from the former earnings-based score.
+  const best = Number(storage.get("best-time", "0"));
+  return Number.isFinite(best) && best >= 0 ? best : 0;
+}
 
 function validateSavePayload(input: unknown): GameSave {
   const record = (value: unknown): Record<string, unknown> => {
@@ -457,13 +463,13 @@ function buy(id: UpgradeId) {
 function endGame() {
   if (state.over) return;
   state.over = true;
-  const best = Math.max(Number(storage.get("best", "0")), sim.earned);
-  storage.set("best", String(best));
-  $("#final-earned").textContent = money(sim.earned);
+  const best = Math.max(bestTime(), sim.score);
+  storage.set("best-time", String(best));
+  $("#final-time").textContent = clock(sim.score);
   $("#final-served").textContent = String(sim.served);
-  $("#final-best").textContent = money(best);
+  $("#final-best").textContent = clock(best);
   $("#gameover-summary").textContent =
-    `Every bay sat empty and nobody was coming. You ran the range for ${clock(sim.time)}, served ${sim.served} golfers, and watched ${sim.walkouts} of them walk out.`;
+    `The last golfer has left. You kept the range running for ${clock(sim.score)}. The longest survival time wins.`;
   $("#shop").hidden = true;
   $("#gameover-screen").hidden = false;
   $(".game").classList.remove("playing");
@@ -583,8 +589,8 @@ function updateHUD() {
   $("#delivery-count").textContent = String(sim.deliveries);
   $("#spilled-count").textContent = String(sim.spilled);
   $("#earned-count").textContent = money(sim.earned);
-  $("#shift-clock").textContent =
-    `${String(Math.floor(sim.time / 60)).padStart(2, "0")}:${String(Math.floor(sim.time) % 60).padStart(2, "0")}`;
+  $("#shift-clock").textContent = clock(sim.score);
+  $("#time-score").textContent = clock(sim.score);
   $("#range-conditions").textContent =
     `${sim.rangeYards} YD RANGE · ${state.wind ? "LIGHT BREEZE" : "CALM CONDITIONS"}`;
   drawMap();
@@ -824,7 +830,7 @@ $("#sound").addEventListener("click", () => {
 });
 $("#help").addEventListener("click", () =>
   openDialog(
-    `<span class="eyebrow">KEEP THE RANGE RUNNING</span><h2>Your shift, explained.</h2><div class="help-step"><span>01</span><div><strong>Collect and return.</strong><p><kbd>W A S D</kbd> or arrow keys drive. <kbd>Space</kbd> brakes. Drive over white balls to fill your 75-ball hopper. A full hopper turns on the rotating roof beacon. Stop at the orange depot and press <kbd>E</kbd> to return them. Deliver a completely full hopper and you pocket a <b>$5</b> bonus.</p></div></div><div class="help-step"><span>02</span><div><strong>Keep your golfers supplied.</strong><p>Supply starts at 50 balls. Seven golfers keep hitting while the depot has balls, faster when supply is high and slower when it is low. Empty supply stops their swings and makes them lose patience. Returning a load replenishes the supply and helps them recover.</p></div></div><div class="help-step"><span>03</span><div><strong>Protect your load.</strong><p>Hit a tree, rock, log, fence, sign, or wildlife and <b>50%</b> of your current load spills out. A flying golf ball hitting the cart spills <b>15%</b>. Losses round up to whole balls. Spilled balls bounce onto the range for you to collect again. Sand traps slow the cart by <b>30%</b> until you drive back onto grass.</p></div></div><div class="help-step"><span>04</span><div><strong>Earn and upgrade.</strong><p>Every ball a golfer hits pays you, and happy golfers tip. Park at the depot and press <kbd>B</kbd> for the shop: engine, hopper, collector width, cage, bumper, range length, more bays, bay dispensers, a second depot, obstacle clearing, nets, or a driverless helper cart. The range starts at 100 yards with slow, patient hitters. Each extra 50 yards speeds the golfers up, reveals more hazards, and from 200 yards brings grinders, from 250 pros. Golfers whose patience hits zero walk out, and how happy the rest are decides who shows up next. If every bay sits empty for 30 seconds, the shift is over and your earnings are the score.</p></div></div><div class="help-step"><span>05</span><div><strong>Find your way.</strong><p>The map stays in the bottom right. Drag with the mouse to look around the cart and scroll to zoom. <kbd>C</kbd> changes camera, <kbd>Esc</kbd> or <kbd>P</kbd> opens the menu, and <kbd>R</kbd> recovers your cart. Touch arrows and the square brake button are available on smaller screens.</p></div></div><button data-action="close" class="primary-button">Back to menu ${icon("arrow", 18)}</button>`,
+    `<span class="eyebrow">KEEP THE RANGE RUNNING</span><h2>Your shift, explained.</h2><div class="help-step"><span>01</span><div><strong>Collect and return.</strong><p><kbd>W A S D</kbd> or arrow keys drive. <kbd>Space</kbd> brakes. Drive over white balls to fill your 75-ball hopper. A full hopper turns on the rotating roof beacon. Stop at the orange depot and press <kbd>E</kbd> to return them. Deliver a completely full hopper and you pocket a <b>$5</b> bonus.</p></div></div><div class="help-step"><span>02</span><div><strong>Keep your golfers supplied.</strong><p>Supply starts at 50 balls. Seven golfers keep hitting while the depot has balls, faster when supply is high and slower when it is low. Empty supply stops their swings and makes them lose patience. Returning a load replenishes the supply and helps them recover.</p></div></div><div class="help-step"><span>03</span><div><strong>Protect your load.</strong><p>Hit a tree, rock, log, fence, sign, or wildlife and <b>50%</b> of your current load spills out. A flying golf ball hitting the cart spills <b>15%</b>. Losses round up to whole balls. Spilled balls bounce onto the range for you to collect again. Sand traps slow the cart by <b>30%</b> until you drive back onto grass.</p></div></div><div class="help-step"><span>04</span><div><strong>Earn and upgrade.</strong><p>Every ball a golfer hits pays you, and happy golfers tip. Park at the depot and press <kbd>B</kbd> for the shop: engine, hopper, collector width, cage, bumper, range length, more bays, bay dispensers, a second depot, obstacle clearing, nets, or a driverless helper cart. The range starts at 100 yards with slow, patient hitters. Each extra 50 yards speeds the golfers up, reveals more hazards, and from 200 yards brings grinders, from 250 pros. Golfers whose patience hits zero walk out, and how happy the rest are decides who shows up next. The instant the last golfer leaves the range, your shift ends. Your score is the time you kept the range running. Compete for the longest survival time; cash buys upgrades.</p></div></div><div class="help-step"><span>05</span><div><strong>Find your way.</strong><p>The map stays in the bottom right. Drag with the mouse to look around the cart and scroll to zoom. <kbd>C</kbd> changes camera, <kbd>Esc</kbd> or <kbd>P</kbd> opens the menu, and <kbd>R</kbd> recovers your cart. Touch arrows and the square brake button are available on smaller screens.</p></div></div><button data-action="close" class="primary-button">Back to menu ${icon("arrow", 18)}</button>`,
   ),
 );
 $("#settings").addEventListener("click", () =>
@@ -1029,20 +1035,22 @@ function animate(now: number) {
     if (drive.collision) spill("obstacle", drive.collision.name);
     for (const order of sim.update(dt))
       world.launchGolferShot(order, state.wind);
-    const hits = world.updateFlights(dt);
-    for (let i = 0; i < hits; i++) spill("ball");
-    const helperBalls = world.updateHelper(dt);
-    if (helperBalls) {
-      sim.deliverHelper(helperBalls);
-      showNotice(
-        `Helper cart returned ${helperBalls} balls.`,
-        `${sim.supply} balls ready to hit.`,
-      );
+    if (!sim.over) {
+      const hits = world.updateFlights(dt);
+      for (let i = 0; i < hits; i++) spill("ball");
+      const helperBalls = world.updateHelper(dt);
+      if (helperBalls) {
+        sim.deliverHelper(helperBalls);
+        showNotice(
+          `Helper cart returned ${helperBalls} balls.`,
+          `${sim.supply} balls ready to hit.`,
+        );
+      }
     }
     world.syncGolfers(sim.golfers);
     handleEvents(now);
   }
-  world.update(running ? dt : 0);
+  world.update(running && !state.over ? dt : 0);
   if (now - state.noticeUntil > 0) $("#notice").hidden = true;
   $(".game").classList.toggle("impact", now < state.impactUntil);
   if (now - hudTime > 100) {
@@ -1070,9 +1078,9 @@ async function init() {
     world.setWind(state.wind);
     applyUpgrades();
     world.syncGolfers(sim.golfers);
-    const best = Number(storage.get("best", "0"));
+    const best = bestTime();
     if (best > 0) {
-      $("#best-score").textContent = `Best shift so far: ${money(best)}`;
+      $("#best-score").textContent = `Best survival time: ${clock(best)}`;
       $("#best-score").hidden = false;
     }
     updateHUD();
@@ -1101,6 +1109,7 @@ async function init() {
           paused: state.paused,
           mode: "collector",
           time: sim.time,
+          score: sim.score,
           reserve: sim.reserve,
           hopper: sim.hopper,
           returned: sim.returned,
