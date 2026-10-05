@@ -27,7 +27,7 @@ The supply is finite: collecting does not resupply the golfers until you return 
 - A small share of shots are sliced over the fence and lost for good. Nets cut that share.
 - Range length is the pacing lever. At 100 yards golfers hit at half speed and the cart is slow, which leaves time to learn. Each 50 yard tier speeds the golfers up, reveals more hazards, and opens the door to grinders at 200 yards and pros at 250.
 - Park at a depot and press **B** for the shop. Cart upgrades: engine, hopper, collector width, cage, bumper. Range upgrades: more bays (up to 12), bay dispensers, a second depot, obstacle clearing, nets, and a driverless helper cart. Fresh balls can be bought at any time.
-- When every bay is empty and the range is in too poor a state for anyone to arrive, a 30 second clock runs. When it hits zero the shift is over and lifetime earnings are the score. The best shift is kept on the device.
+- The instant the last golfer leaves the range, the shift ends, regardless of reputation, remaining balls, or queued replacements. Your score is survival time: players compete for the longest shift. The live timer freezes when the shift ends, and the longest time is kept on the device. Pausing, opening menus, or time away from the game does not increase your score. Cash pays for upgrades.
 
 - Colliding with an obstacle spills **50%** of your current load.
 - A flying golf ball striking the cart spills **15%**.
@@ -48,7 +48,7 @@ The supply is finite: collecting does not resupply the golfers until you return 
 | Switch chase / overhead camera | **C** or the camera option in the menu                |
 | Open menu / resume             | **Esc**, **P**, or the corner menu button             |
 
-The range fills the browser viewport. During play, a compact strip shows supply, golfer mood, and hopper count, with a small map in the bottom right. The return button appears only beside the depot with a load to return. Collision and delivery feedback appears briefly.
+The range fills the browser viewport. During play, a live timer shows your survival score, a compact strip shows supply, golfer mood, and hopper count, with a small map in the bottom right. The return button appears only beside the depot with a load to return. Collision and delivery feedback appears briefly.
 
 The corner menu pauses play and contains shift totals, saved games, camera, sound, help, settings, and cart recovery. Settings include wind, graphics quality, and sound. Preferences stay on this device.
 

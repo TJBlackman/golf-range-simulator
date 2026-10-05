@@ -72,11 +72,14 @@ test("bay cooldowns survive saves with their remaining simulation time", () => {
   sim.update(golfer.until - sim.time);
   sim.update(5);
   const saved = sim.exportState();
+  const remaining = saved.golfers[0].cooldownUntil - saved.time;
+  assert.ok(Math.abs(remaining - 10) < 1e-9);
   const copy = new RangeManagement();
   copy.restoreState(saved);
-  assert.equal(copy.golfers[0].cooldownUntil - copy.time, 10);
+  assert.equal(copy.time, saved.time);
+  assert.equal(copy.golfers[0].cooldownUntil, saved.golfers[0].cooldownUntil);
   copy.update(0);
-  assert.equal(copy.golfers[0].cooldownUntil - copy.time, 10);
+  assert.equal(copy.golfers[0].cooldownUntil - copy.time, remaining);
   copy.update(9.99);
   assert.equal(copy.golfers[0].status, "empty");
   copy.update(0.02);

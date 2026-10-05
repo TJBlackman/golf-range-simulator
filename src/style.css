@@ -60,7 +60,9 @@ h1, h2, p { margin: 0; }
 #hopper-bar { display: block; background: #d6c49a; height: 100%; width: 0; transition: width .15s; }
 .menu-button { display: grid; place-items: center; position: absolute; right: var(--edge); top: var(--edge); width: 42px; height: 42px; z-index: 2; }
 .menu-button:hover { background: #2e443ce6; }
-.control-hints { position: absolute; top: 31px; right: 84px; z-index: 2; color: #fffdf1; font-size: 9px; display: flex; gap: 15px; align-items: center; text-shadow: 0 1px 8px #071810c0; pointer-events: none; }
+.score-hud { position: absolute; top: var(--edge); right: calc(var(--edge) + 54px); z-index: 2; display: flex; align-items: center; gap: 10px; min-height: 42px; padding: 8px 12px; }
+.score-hud strong { font-size: 22px; line-height: 1.1; font-weight: 450; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.control-hints { position: absolute; top: 31px; right: 228px; z-index: 2; color: #fffdf1; font-size: 9px; display: flex; gap: 15px; align-items: center; text-shadow: 0 1px 8px #071810c0; pointer-events: none; }
 .control-hints span { display: inline-flex; align-items: center; gap: 6px; }
 .control-hints kbd { color: #fffcf0; background: #16272166; border-color: #ffffff35; font-size: 8px; padding: 3px 5px; }
 .map-panel { position: absolute; bottom: var(--edge); right: var(--edge); width: 174px; padding: 10px 8px 6px; z-index: 2; }
@@ -122,6 +124,9 @@ h1, h2, p { margin: 0; }
 #cash-stat.pulse strong { color: #ffedc1; transform: scale(1.04); }
 .best-score { display: block; font-size: 9px; color: #b3b5a4; margin-top: 12px; }
 
+@media (max-width: 850px) {
+  .control-hints { display: none; }
+}
 @media (pointer: coarse), (max-width: 700px) {
   :root { --edge: 14px; }
   .range-identity { gap: 9px; }
@@ -141,6 +146,8 @@ h1, h2, p { margin: 0; }
   .stat-label { font-size: 7px; letter-spacing: .7px; }
   .control-hints { display: none; }
   .menu-button { width: 38px; height: 38px; }
+  .score-hud { right: calc(var(--edge) + 46px); min-height: 38px; gap: 7px; padding: 7px 9px; }
+  .score-hud strong { font-size: 18px; }
   .drive-pad { display: grid; }
   .map-panel { width: 132px; }
   .map-heading { font-size: 6px; letter-spacing: 1px; }
@@ -150,6 +157,7 @@ h1, h2, p { margin: 0; }
   .shop { bottom: 221px; max-height: calc(100dvh - 380px); width: min(360px,calc(100vw - 28px)); }
 }
 @media (max-width: 390px) {
+  .score-hud { flex-direction: column; gap: 1px; padding: 4px 8px; }
   .game-hud { right: var(--edge); justify-content: space-between; padding: 11px; }
   .hud-stat + .hud-stat { padding-left: 10px; margin-left: 10px; }
   .hud-primary { margin-right: 10px; }

@@ -12,7 +12,6 @@ import {
   STOCK_BUNDLE,
   HOPPER_CAPACITY,
   FULL_LOAD_BONUS,
-  GAME_OVER_SECONDS,
   WALKOUT_SECONDS,
   BAY_COOLDOWN_SECONDS,
   getGolferMood,
@@ -313,7 +312,7 @@ test("the opening lineup drives in one bay at a time and is on the mats about fi
   // The rating holds steady while the range waits for its lineup.
   while (sim.time + 0.05 < first) sim.update(0.05);
   assert.equal(sim.reputation, 60);
-  assert.equal(sim.emptyFor, 0);
+  assert.equal(sim.over, false);
   open(sim);
   assert.ok(sim.time < ready);
   assert.deepEqual(sim.golfers.map((g) => g.type), INITIAL_LINEUP);
@@ -381,24 +380,105 @@ test("arriving golfers reach their bay before consuming supply or taking a shot"
   assert.equal(advance(sim, 0.2).filter(order => order.golfer === golfer.id).length, 1);
 });
 
-test("the shift ends when nobody is left and nobody is coming", () => {
+test("the shift ends at the final departure regardless of rating or remaining supply", () => {
+  for (const reputation of [0, 100]) {
+    const sim = new RangeManagement(seeded());
+    open(sim);
+    sim.reserve = 0;
+    for (const golfer of sim.golfers) {
+      golfer.waiting = true;
+      golfer.nextShot = sim.time + 100;
+      golfer.patience = 0.01;
+    }
+    sim.update(0.05);
+    assert.ok(sim.golfers.every((g) => g.status === "leaving"));
+    assert.equal(sim.over, false);
+    sim.reserve = 5000;
+    sim.reputation = reputation;
+    sim.takeEvents();
+    const departure = Math.max(...sim.golfers.map((g) => g.until));
+    sim.update(WALKOUT_SECONDS - 0.01);
+    assert.equal(sim.over, false);
+    // Overshooting the departure must not add extra survival time.
+    assert.deepEqual(sim.update(0.05), []);
+    assert.ok(sim.golfers.every((g) => g.status === "empty"));
+    assert.equal(sim.over, true);
+    assert.equal(sim.score, departure);
+    assert.ok(sim.golfers.every((g) => g.cooldownUntil === departure + BAY_COOLDOWN_SECONDS));
+    assert.ok(sim.golfers.every((g) => g.until >= g.cooldownUntil));
+    assert.deepEqual(sim.takeEvents(), [{ kind: "over" }]);
+    const finished = sim.exportState();
+    assert.deepEqual(sim.update(30), []);
+    assert.deepEqual(sim.exportState(), finished);
+    assert.deepEqual(sim.takeEvents(), []);
+  }
+});
+
+test("a queued arrival cannot rescue the shift on the frame the final golfer leaves", () => {
+  for (const lastBay of [0, GOLFER_COUNT - 1]) {
+    const sim = new RangeManagement(seeded());
+    open(sim);
+    sim.reserve = 5000;
+    sim.reputation = 100;
+    sim.takeEvents();
+    for (const golfer of sim.golfers) {
+      golfer.status = "empty";
+      golfer.until = sim.time + 0.025;
+    }
+    sim.golfers[lastBay].status = "leaving";
+    const departure = sim.golfers[lastBay].until;
+    sim.update(0.05);
+    assert.equal(sim.over, true);
+    assert.equal(sim.score, departure);
+    assert.equal(sim.arrivals, 0);
+    assert.deepEqual(sim.takeEvents(), [{ kind: "over" }]);
+  }
+});
+
+test("one remaining golfer keeps the shift running", () => {
   const sim = new RangeManagement(seeded());
   open(sim);
-  sim.reserve = 0;
-  sim.reputation = 0;
   for (const golfer of sim.golfers) {
-    golfer.waiting = true;
-    golfer.patience = 0.01;
+    golfer.status = "empty";
+    golfer.until = sim.time + 100;
   }
-  advance(sim, 1);
-  assert.ok(sim.golfers.every((g) => g.status === "leaving"));
-  advance(sim, WALKOUT_SECONDS + 1);
-  assert.ok(sim.golfers.every((g) => g.status === "empty"));
+  sim.golfers[0].status = "playing";
+  sim.golfers[0].nextShot = sim.time + 100;
+  sim.reputation = 0;
+  const before = sim.score;
+  sim.update(1);
   assert.equal(sim.over, false);
-  advance(sim, GAME_OVER_SECONDS + 1);
+  assert.equal(sim.score, before + 1);
+});
+
+test("survival score rewards longer shifts independently of earnings and survives loading", () => {
+  const shorter = new RangeManagement(), longer = new RangeManagement();
+  shorter.time = 60;
+  shorter.earned = 5000;
+  longer.time = 120;
+  longer.earned = 1;
+  assert.equal(shorter.score, 60);
+  assert.equal(longer.score, 120);
+  assert.ok(longer.score > shorter.score);
+  shorter.restoreState(longer.exportState());
+  assert.equal(shorter.score, longer.score);
+});
+
+test("an empty legacy shift ends without advancing its clock or admitting queued golfers", () => {
+  const sim = new RangeManagement(seeded());
+  open(sim);
+  const legacy = { ...sim.exportState(), time: 123, reputation: 100, emptyFor: 29 };
+  for (const golfer of legacy.golfers) {
+    golfer.status = "empty";
+    golfer.until = 0;
+  }
+  sim.restoreState(legacy);
+  sim.takeEvents();
+  sim.update(0.05);
   assert.equal(sim.over, true);
-  assert.ok(sim.takeEvents().some((e) => e.kind === "over"));
-  assert.equal(sim.update(0.05).length, 0);
+  assert.equal(sim.score, 123);
+  assert.equal(sim.arrivals, 0);
+  assert.deepEqual(sim.takeEvents(), [{ kind: "over" }]);
 });
 
 test("shots pay, streaks tip, and upgrades cost cash and change the cart", () => {
