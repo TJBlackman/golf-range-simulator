@@ -112,6 +112,16 @@ h1, h2, p { margin: 0; }
 .shop-head .eyebrow { color: #c4c6b4; }
 .shop-head strong { margin-left: auto; font-size: 17px; font-weight: 450; color: #e2d1aa; }
 .shop-head .icon-button { width: 26px; height: 26px; background: #ffffff08; color: inherit; }
+.shop-growth { margin-top: 13px; padding: 12px; border: 1px solid #c9b58b30; border-radius: 4px; background: #ffffff04; }
+.shop-growth > div { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.shop-growth strong { font-size: 11px; font-weight: 500; color: #e2d1aa; }
+.shop-growth span, .shop-growth p { font-size: 10px; line-height: 1.5; color: #aab9ab; }
+.shop-growth p { margin: 5px 0 0; }
+.shop-growth > strong { display: block; margin-top: 9px; }
+.shop-growth progress { display: block; width: 100%; height: 4px; margin: 9px 0; border: 0; border-radius: 2px; overflow: hidden; background: #ffffff1c; accent-color: #d6c49a; }
+.shop-growth progress::-webkit-progress-bar { background: #ffffff1c; }
+.shop-growth progress::-webkit-progress-value { background: #d6c49a; }
+.shop-growth progress::-moz-progress-bar { background: #d6c49a; }
 .shop h3 { font-size: 8px; letter-spacing: 1.7px; font-weight: 500; color: #9bab9c; margin: 15px 0 5px; text-transform: uppercase; }
 .shop-row { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-top: 1px solid #ffffff0e; }
 .shop-row > div { flex: 1; min-width: 0; }

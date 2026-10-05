@@ -3,7 +3,7 @@ export const HOPPER_CAPACITY = 75;
 export const FULL_LOAD_BONUS = 5;
 export const INITIAL_RESERVE = 50;
 export const GOLFER_COUNT = 7;
-export const MAX_BAYS = 12;
+export const MAX_BAYS = 16;
 export const STARTING_CASH = 20;
 export const STARTING_REPUTATION = 60;
 export const TIP_STREAK = 10;
@@ -23,6 +23,9 @@ export const LEFT_HANDED_CHANCE = 0.1;
 export const RANGE_TIERS = [100, 150, 200, 250, 300];
 /** Shot interval multiplier per range tier: short ranges play slow. */
 export const PACE = [2, 1.65, 1.35, 1.15, 1];
+/** Three cart purchases earn the six points needed for each expansion. */
+export const CART_UPGRADE_POINTS = 2;
+export const EXPANSION_POINTS = 6;
 
 export type SpillCause = "obstacle" | "ball";
 export type GolferType = "casual" | "family" | "grinder" | "pro";
@@ -134,6 +137,7 @@ export type SimEvent =
   | { kind: "over" };
 
 export type UpgradeCategory = "cart" | "range" | "supply";
+export type AutomaticUpgradeId = "range" | "bays" | "dispensers";
 export type UpgradeId =
   | "range"
   | "engine"
@@ -148,8 +152,9 @@ export type UpgradeId =
   | "nets"
   | "helper"
   | "stock";
+export type PurchasableUpgradeId = Exclude<UpgradeId, AutomaticUpgradeId>;
 export type Upgrade = {
-  id: UpgradeId;
+  id: PurchasableUpgradeId;
   name: string;
   category: UpgradeCategory;
   blurb: string;
@@ -166,7 +171,8 @@ export const HOPPER_CAPACITIES = [HOPPER_CAPACITY, 100, 125, 150];
 export const COLLECTOR_HALF_WIDTHS = [1.6, 2.6, 3.6];
 export const CAGE_RATES = [0.15, 0.08, 0];
 export const BUMPER_RATES = [0.5, 0.3, 0.15];
-export const BAY_COUNTS = [GOLFER_COUNT, 9, MAX_BAYS];
+// Keep the original 7/9/12 bay layouts so older saves retain their golfers.
+export const BAY_COUNTS = [GOLFER_COUNT, 9, 12, 14, MAX_BAYS];
 export const DISPENSER_BUFFERS = [0, 6, 12];
 export const LOSS_RATES = [0.04, 0.02, 0.005];
 
@@ -210,36 +216,6 @@ export const UPGRADES: Upgrade[] = [
     blurb: "Softens obstacle collisions.",
     costs: [45, 100],
     levels: ["Collision spills 50%", "Spills 30%", "Spills 15%"],
-  },
-  {
-    id: "range",
-    name: "Range length",
-    category: "range",
-    blurb: "A longer range brings faster hitters and better paying golfers.",
-    costs: [120, 220, 360, 520],
-    levels: [
-      "100 yards, slow play",
-      "150 yards",
-      "200 yards, grinders arrive",
-      "250 yards, pros arrive",
-      "300 yards, full pace",
-    ],
-  },
-  {
-    id: "bays",
-    name: "Hitting bays",
-    category: "range",
-    blurb: "More bays, more golfers, more balls on the ground.",
-    costs: [150, 320],
-    levels: ["7 bays", "9 bays", "12 bays"],
-  },
-  {
-    id: "dispensers",
-    name: "Bay dispensers",
-    category: "range",
-    blurb: "Each bay keeps its own buffer of balls.",
-    costs: [120, 220],
-    levels: ["No buffer", "6 balls per bay", "12 balls per bay"],
   },
   {
     id: "depot",
@@ -344,6 +320,9 @@ export function validateManagementSnapshot(input: unknown): ManagementSnapshot {
       : number(source[key], key === "reputation" ? 100 : 1e12, !FRACTIONAL_STATE.has(key));
   const savedLevels = record(source.levels);
   const levels = {} as Record<UpgradeId, number>;
+  levels.range = number(savedLevels.range, RANGE_TIERS.length - 1, true);
+  levels.bays = number(savedLevels.bays, BAY_COUNTS.length - 1, true);
+  levels.dispensers = number(savedLevels.dispensers, DISPENSER_BUFFERS.length - 1, true);
   for (const upgrade of UPGRADES)
     levels[upgrade.id] = number(savedLevels[upgrade.id], upgrade.repeat ? 1e9 : upgrade.costs.length, true);
   if (numbers.hopper > HOPPER_CAPACITIES[levels.hopper]) throw new Error("The saved hopper exceeds its capacity.");
@@ -477,13 +456,38 @@ export class RangeManagement {
   restoreState(input: unknown) {
     const snapshot = validateManagementSnapshot(input);
     for (const key of MANAGEMENT_NUMBERS) this[key] = snapshot[key];
-    for (const upgrade of UPGRADES) this.levels[upgrade.id] = snapshot.levels[upgrade.id];
+    Object.assign(this.levels, snapshot.levels);
     this.golfers.splice(0, this.golfers.length, ...snapshot.golfers);
     this.events = snapshot.events;
     this.over = snapshot.over;
     this.randomState = snapshot.randomState;
+    // Give older shifts the growth earned by their cart, keeping any range
+    // improvements they already paid for and every existing golfer.
+    this.advanceRange();
   }
 
+  get cartPoints() {
+    return UPGRADES.filter(upgrade => upgrade.category === "cart")
+      .reduce((points, upgrade) => points + this.levels[upgrade.id] * CART_UPGRADE_POINTS, 0);
+  }
+  get growthTier() {
+    return Math.min(RANGE_TIERS.length - 1, Math.floor(this.cartPoints / EXPANSION_POINTS));
+  }
+  get nextGrowth() {
+    for (let tier = this.growthTier + 1; tier < RANGE_TIERS.length; tier++) {
+      const next = {
+        points: tier * EXPANSION_POINTS,
+        yards: RANGE_TIERS[Math.max(this.levels.range, tier)],
+        bays: BAY_COUNTS[Math.max(this.levels.bays, tier)],
+        dispenserBuffer: DISPENSER_BUFFERS[Math.max(this.levels.dispensers, Math.floor(tier / 2))],
+      };
+      // Old shifts can already own these improvements. Show the next milestone
+      // that will actually add something to their range.
+      if (next.yards > this.rangeYards || next.bays > this.bays || next.dispenserBuffer > this.dispenserBuffer)
+        return next;
+    }
+    return undefined;
+  }
   get bays() {
     return BAY_COUNTS[this.levels.bays];
   }
@@ -694,8 +698,8 @@ export class RangeManagement {
 
   /** Price of the next tier, or undefined when maxed out. */
   price(id: UpgradeId): number | undefined {
-    const upgrade = UPGRADES.find((u) => u.id === id)!;
-    return upgrade.repeat ?? upgrade.costs[this.levels[id]];
+    const upgrade = UPGRADES.find((u) => u.id === id);
+    return upgrade?.repeat ?? upgrade?.costs[this.levels[id]];
   }
 
   buy(id: UpgradeId): "ok" | "maxed" | "poor" {
@@ -710,11 +714,25 @@ export class RangeManagement {
       return "ok";
     }
     this.levels[id]++;
-    if (id === "bays") this.openBays();
+    this.advanceRange();
     return "ok";
   }
 
+  private advanceRange() {
+    const oldPace = this.pace;
+    const tier = this.growthTier;
+    this.levels.range = Math.max(this.levels.range, tier);
+    this.levels.bays = Math.max(this.levels.bays, tier);
+    this.levels.dispensers = Math.max(this.levels.dispensers, Math.floor(tier / 2));
+    if (this.pace < oldPace)
+      for (const golfer of this.golfers)
+        if (golfer.status === "playing" && golfer.shots > 0 && golfer.nextShot > this.time)
+          golfer.nextShot = this.time + (golfer.nextShot - this.time) * this.pace / oldPace;
+    this.openBays();
+  }
+
   private openBays() {
+    const firstNewBay = this.golfers.length;
     while (this.golfers.length < this.bays)
       this.golfers.push({
         id: this.golfers.length,
@@ -731,6 +749,12 @@ export class RangeManagement {
         until: this.time + 3,
         cooldownUntil: 0,
       });
+    // New visitors drive in one at a time, farthest bay first.
+    let at = this.time + 3;
+    for (let id = this.golfers.length - 1; id >= firstNewBay; id--) {
+      this.golfers[id].until = at;
+      at += this.between(OPENING_CART_GAP_SECONDS);
+    }
   }
 
   collect(count: number): number {

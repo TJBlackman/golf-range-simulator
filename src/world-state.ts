@@ -1,3 +1,5 @@
+import { BAY_COUNTS, MAX_BAYS, RANGE_TIERS } from "./management.ts";
+
 /** Validate browser-save data before the renderer mutates any live objects. */
 export function validateWorldState(value: unknown) {
   const fail = () => { throw new Error("Save contains invalid scene data."); };
@@ -23,8 +25,8 @@ export function validateWorldState(value: unknown) {
     const t = object(v); vector(t.position); vector(t.rotation); vector(t.scale);
   };
   const root = object(value);
-  if (root.version !== 1 || ![100,150,200,250,300].includes(root.rangeYards as number) ||
-      ![7,9,12].includes(root.bayCount as number)) fail();
+  if (root.version !== 1 || !RANGE_TIERS.includes(root.rangeYards as number) ||
+      !BAY_COUNTS.includes(root.bayCount as number)) fail();
   for (const key of ["elapsed", "tractorAngle", "tractorSpeed", "lookYaw", "lookPitch", "lookZoom", "lookHoldUntil"])
     number(root[key], key === "elapsed" ? 0 : -100000, 1000000000);
   vector(root.tractorPosition); vector(root.cameraPosition); vector(root.cameraTarget);
@@ -52,7 +54,7 @@ export function validateWorldState(value: unknown) {
     });
   });
   array(root.bouncingBalls, 1000).forEach(v => { const b=object(v); vector(b.position); vector(b.velocity); });
-  const golfers = array(root.golfers, 12);
+  const golfers = array(root.golfers, MAX_BAYS);
   if (golfers.length !== root.bayCount) fail();
   golfers.forEach(v => {
     const g = object(v); vector(g.position); number(g.rotation); number(g.swingTime, 0, 60);

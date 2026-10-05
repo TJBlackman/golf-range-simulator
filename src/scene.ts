@@ -70,7 +70,7 @@ const FIELD = { minX: -50, maxX: 50, minZ: 14, maxZ: TEE.z + 100 * YARD - 6 };
 /** Painted front edge of the driving area, joining the side fences. */
 export const FRONT_BOUNDARY = { minX: -54, maxX: 54, z: 8 };
 /** Bay centres along the tee line, in the order bays open. */
-export const BAY_X = [-12, -8, -4, 0, 4, 8, 12, -16, 16, -20, 20, -24];
+export const BAY_X = [-12, -8, -4, 0, 4, 8, 12, -16, 16, -20, 20, -24, 24, -28, 28, -32];
 const HELPER_HOPPER = 80;
 const MAX_HOPPER = Math.max(...HOPPER_CAPACITIES);
 /** Zigzag sweep lanes that fit the current range, then home to the depot. */
@@ -219,7 +219,7 @@ export class RangeScene {
   readonly depotPosition = new THREE.Vector3(-48, 0, 7);
   readonly depots: THREE.Vector3[] = [];
   readonly golfCarts: VisitorCart[] = [];
-  /** Current range length. Starts short and grows through the shop. */
+  /** Current range length. Starts short and grows with cart upgrades. */
   rangeYards = 100;
   rangeEnd = TEE.z + 100 * YARD;
   private helperRoute = helperRoute(this.rangeEnd);
