@@ -15,11 +15,11 @@ import {
 import type { Point, Shape, Shot } from "./physics";
 import {
   obstacleDistance,
-  resolveMove,
+  resolveVehicleMove,
   segmentHitsVehicle,
-  VEHICLE_RADIUS,
+  vehicleObstacleDistance,
 } from "./collisions";
-import type { Obstacle } from "./collisions";
+import type { CollectorBounds, Obstacle } from "./collisions";
 import { GOLFER_TYPES, HOPPER_CAPACITIES, getGolferMood } from "./management";
 import { createGolfCart, disposeGolfCart } from "./golf-cart";
 import { validateWorldState } from "./world-state";
@@ -242,6 +242,7 @@ export class RangeScene {
   private tractorTerrainSpeed = 1;
   private wings: THREE.Group[] = [];
   private wingRollers: THREE.Object3D[] = [];
+  private collectorBounds?: CollectorBounds;
   private cartVisual = { collector: -1, cage: -1, bumper: -1, hopper: -1 };
   private cage?: THREE.Group;
   private bumper?: THREE.Group;
@@ -1617,6 +1618,7 @@ export class RangeScene {
         const offset = 1.42 + 0.12 + 1.43 * scale;
         for (const side of [-1, 1]) this.buildWing(side * offset, scale);
       }
+      this.updateCollectorBounds();
     }
     if (visual.cage !== setup.cage) {
       visual.cage = setup.cage;
@@ -1740,6 +1742,29 @@ export class RangeScene {
     this.tractor.add(wing);
     this.wings.push(wing);
     this.wingRollers.push(copy);
+  }
+
+  /** Measure the rendered collector in cart space, so every upgrade has matching collisions. */
+  private updateCollectorBounds() {
+    this.tractor.updateWorldMatrix(true, true);
+    const toCart = this.tractor.matrixWorld.clone().invert();
+    const bounds = new THREE.Box3();
+    const parts = [this.collectorRoller, ...this.wings];
+    this.tractorModel.traverse(node => {
+      if (node.name.startsWith("CollectorGuideWheel")) parts.push(node);
+    });
+    for (const part of parts) part?.traverse(node => {
+      if (!(node instanceof THREE.Mesh)) return;
+      node.geometry.computeBoundingBox();
+      if (node.geometry.boundingBox)
+        bounds.union(node.geometry.boundingBox.clone().applyMatrix4(
+          toCart.clone().multiply(node.matrixWorld),
+        ));
+    });
+    this.collectorBounds = bounds.isEmpty() ? undefined : {
+      minX: bounds.min.x, maxX: bounds.max.x,
+      minZ: bounds.min.z, maxZ: bounds.max.z,
+    };
   }
 
   /** Tall netting along the boundary, taller and all around at level 2. */
@@ -1977,8 +2002,8 @@ export class RangeScene {
     this.tractorSpeed = (engineSpeed + (desired - engineSpeed) *
       Math.min(1, dt * (brake ? 9 : 2.2 * (this.cart.maxSpeed / 9)))) * this.tractorTerrainSpeed;
     if (brake) this.tractorSpeed *= Math.max(0, 1 - dt * 7);
-    this.tractorAngle -= steer * this.tractorSpeed * 0.12 * dt;
-    this.tractor.rotation.y = this.tractorAngle;
+    const previousAngle = this.tractorAngle;
+    const nextAngle = previousAngle - steer * this.tractorSpeed * 0.12 * dt;
     const previous = this.tractor.position.clone();
     const obstacles = [
       ...this.obstacles,
@@ -1995,18 +2020,22 @@ export class RangeScene {
       const obstacle = obstacles.find((o) => o.id === id);
       if (
         !obstacle ||
-        obstacleDistance(previous, obstacle) > VEHICLE_RADIUS + 0.75
+        vehicleObstacleDistance({ ...previous, angle: previousAngle }, obstacle, this.collectorBounds) > 0.75
       )
         this.latchedCollisions.delete(id);
     }
-    const result = resolveMove(
-      previous,
+    const result = resolveVehicleMove(
+      { ...previous, angle: previousAngle },
       {
-        x: previous.x + Math.sin(this.tractorAngle) * this.tractorSpeed * dt,
-        z: previous.z + Math.cos(this.tractorAngle) * this.tractorSpeed * dt,
+        x: previous.x + Math.sin(nextAngle) * this.tractorSpeed * dt,
+        z: previous.z + Math.cos(nextAngle) * this.tractorSpeed * dt,
+        angle: nextAngle,
       },
       obstacles,
+      this.collectorBounds,
     );
+    this.tractorAngle = result.angle;
+    this.tractor.rotation.y = result.angle;
     this.tractor.position.x = result.position.x;
     this.tractor.position.z = result.position.z;
     let collision: Obstacle | undefined;

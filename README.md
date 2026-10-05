@@ -33,6 +33,7 @@ The supply is finite: collecting does not resupply the golfers until you return 
 - A flying golf ball striking the cart spills **15%**.
 - Losses round up to whole balls. Spilled balls visibly bounce onto the field and remain collectible.
 - Trees, rocks, fallen logs, fences, signs, bay buildings, the depot, and wildlife are obstacles. Sustained contact causes one spill; moving away and hitting again causes another.
+- The entire collector, including upgraded wings, collides with obstacles. Its collision shape follows the visible width and rotates with the cart, including while steering.
 - The range map stays in the **bottom right** and shows the cart, loose balls, flying shots, obstacles, and return depot.
 
 ## Controls

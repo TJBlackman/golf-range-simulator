@@ -23,10 +23,13 @@ import {
 } from "./management.ts";
 import {
   resolveMove,
+  resolveVehicleMove,
+  vehicleObstacleDistance,
   obstacleDistance,
   segmentHitsVehicle,
   VEHICLE_RADIUS,
 } from "./collisions.ts";
+import type { CollectorBounds, Obstacle, VehiclePose } from "./collisions.ts";
 
 const seeded = (seed = 7) => () => {
   seed = (seed * 1664525 + 1013904223) % 4294967296;
@@ -608,6 +611,93 @@ test("solid obstacles stop the vehicle, with clear routes still drivable", () =>
   };
   const treeResult = resolveMove({ x: 0, z: 7 }, { x: 0, z: 8.1 }, [tree]);
   assert.ok(obstacleDistance(treeResult.position, tree) >= VEHICLE_RADIUS);
+});
+
+const collectorBounds = (halfWidth: number): CollectorBounds => ({
+  minX: -halfWidth, maxX: halfWidth, minZ: 1.84, maxZ: 2.24,
+});
+const localToWorld = (cart: VehiclePose, x: number, z: number) => ({
+  x: cart.x + Math.cos(cart.angle) * x + Math.sin(cart.angle) * z,
+  z: cart.z - Math.sin(cart.angle) * x + Math.cos(cart.angle) * z,
+});
+
+test("the full collector width collides with trees at every tier and heading", () => {
+  for (const halfWidth of [1.425, 3.253, 4.395]) {
+    for (const angle of [0, Math.PI / 2, Math.PI, -0.65]) {
+      for (const side of [-1, 1]) {
+        const previous = { x: 10, z: 20, angle };
+        const tree: Obstacle = {
+          id: "tree", name: "Tree", kind: "circle", radius: 0.4,
+          ...localToWorld(previous, side * (halfWidth - 0.05), 2.8),
+        };
+        const bounds = collectorBounds(halfWidth);
+        const next = { ...localToWorld(previous, 0, 0.3), angle };
+        // These impacts are entirely outside the original body collider.
+        assert.equal(resolveMove(previous, next, [tree]).hit, undefined);
+        const result = resolveVehicleMove(previous, next, [tree], bounds);
+        assert.equal(result.hit?.id, tree.id);
+        assert.ok(vehicleObstacleDistance({ ...result.position, angle: result.angle }, tree, bounds) >= -1e-8);
+      }
+    }
+  }
+});
+
+test("collector upgrades change collisions without blocking clear space beside or behind the cart", () => {
+  const cart = { x: 0, z: 0, angle: 0 };
+  const tree: Obstacle = { id: "tree", name: "Tree", kind: "circle", x: 4.2, z: 2.04, radius: 0.2 };
+  assert.equal(resolveVehicleMove(cart, cart, [tree], collectorBounds(1.425)).hit, undefined);
+  assert.equal(resolveVehicleMove(cart, cart, [tree], collectorBounds(3.253)).hit, undefined);
+  assert.equal(resolveVehicleMove(cart, cart, [tree], collectorBounds(4.395)).hit?.id, tree.id);
+  for (const clear of [{ ...tree, x: 4.7 }, { ...tree, z: 0 }, { ...tree, z: -2.04 }])
+    assert.equal(resolveVehicleMove(cart, cart, [clear], collectorBounds(4.395)).hit, undefined);
+});
+
+test("collector wings stop against box obstacles while rotated", () => {
+  for (const angle of [0, Math.PI / 2, 0.65]) {
+    for (const side of [-1, 1]) {
+      const previous = { x: 10, z: 20, angle };
+      const point = localToWorld(previous, side * 4.2, 2.6);
+      const fence: Obstacle = {
+        id: "fence", name: "Fence", kind: "box",
+        minX: point.x - 0.15, maxX: point.x + 0.15,
+        minZ: point.z - 0.15, maxZ: point.z + 0.15,
+      };
+      const bounds = collectorBounds(4.395);
+      const result = resolveVehicleMove(previous, { ...localToWorld(previous, 0, 0.35), angle }, [fence], bounds);
+      assert.equal(result.hit?.id, fence.id);
+      assert.ok(vehicleObstacleDistance({ ...result.position, angle: result.angle }, fence, bounds) >= -1e-8);
+    }
+  }
+});
+
+test("collector sweeps catch fast travel and wings swinging through a tree", () => {
+  const bounds = collectorBounds(4.395);
+  const previous = { x: 0, z: 0, angle: 0 };
+  const tree: Obstacle = { id: "tree", name: "Tree", kind: "circle", x: 4.2, z: 4, radius: 0.15 };
+  const travel = resolveVehicleMove(previous, { x: 0, z: 5, angle: 0 }, [tree], bounds);
+  assert.equal(travel.hit?.id, tree.id);
+  assert.ok(travel.position.z < 2);
+  assert.ok(vehicleObstacleDistance({ ...travel.position, angle: travel.angle }, tree, bounds) >= -1e-8);
+
+  const turnTree: Obstacle = { ...tree, ...localToWorld({ ...previous, angle: Math.PI / 4 }, 4.2, 2.04) };
+  const next = { ...previous, angle: Math.PI / 2 };
+  assert.ok(vehicleObstacleDistance(previous, turnTree, bounds) > 0);
+  assert.ok(vehicleObstacleDistance(next, turnTree, bounds) > 0);
+  const turn = resolveVehicleMove(previous, next, [turnTree], bounds);
+  assert.equal(turn.hit?.id, turnTree.id);
+  assert.ok(turn.angle < next.angle);
+  assert.ok(vehicleObstacleDistance({ ...turn.position, angle: turn.angle }, turnTree, bounds) >= -1e-8);
+});
+
+test("wing contact stays latched until the collector clears the obstacle", () => {
+  const cart = { x: 0, z: 0, angle: 0 };
+  const bounds = collectorBounds(4.395);
+  const tree: Obstacle = { id: "tree", name: "Tree", kind: "circle", x: 4.2, z: 2.04, radius: 0.4 };
+  const result = resolveVehicleMove(cart, cart, [tree], bounds);
+  const resolved = { ...result.position, angle: result.angle };
+  assert.ok(obstacleDistance(resolved, tree) > VEHICLE_RADIUS + 0.75);
+  assert.ok(vehicleObstacleDistance(resolved, tree, bounds) < 0.75);
+  assert.ok(vehicleObstacleDistance({ ...resolved, x: resolved.x - 1 }, tree, bounds) > 0.75);
 });
 
 test("airborne collision sweeps catch high-speed and rotated hits but ignore balls over the roof or on the ground", () => {
