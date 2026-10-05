@@ -11,7 +11,7 @@ npm install
 npm run dev
 ```
 
-Open **http://localhost:5178** and click **Start your shift**. Port 5178 avoids the other development server already using 5173 on this machine.
+Open **http://localhost:5178** and click **Start your shift**, or press **W** or **↑** to start a new shift and drive forward as soon as the range is ready. This always starts a new shift, even when a saved shift is available. Port 5178 avoids the other development server already using 5173 on this machine.
 
 ## Your shift
 
