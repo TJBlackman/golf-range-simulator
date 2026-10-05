@@ -1,6 +1,4 @@
 export const HOPPER_CAPACITY = 75;
-/** Cash paid on top of a delivery when the hopper arrives completely full. */
-export const FULL_LOAD_BONUS = 5;
 export const INITIAL_RESERVE = 50;
 export const GOLFER_COUNT = 7;
 export const MAX_BAYS = 16;
@@ -168,6 +166,8 @@ export type Upgrade = {
 
 export const ENGINE_SPEEDS = [9, 11.5, 14, 17];
 export const HOPPER_CAPACITIES = [HOPPER_CAPACITY, 100, 125, 150];
+/** Cash paid for a completely full delivery at each hopper tier. */
+export const FULL_LOAD_BONUSES = [5, 10, 15, 20];
 export const COLLECTOR_HALF_WIDTHS = [1.6, 2.6, 3.6];
 export const CAGE_RATES = [0.15, 0.08, 0];
 export const BUMPER_RATES = [0.5, 0.3, 0.15];
@@ -189,9 +189,9 @@ export const UPGRADES: Upgrade[] = [
     id: "hopper",
     name: "Hopper",
     category: "cart",
-    blurb: `Balls the cart can carry. A full load pays a $${FULL_LOAD_BONUS} delivery bonus.`,
+    blurb: "Balls the cart can carry. Each hopper upgrade increases the full load delivery bonus by $5.",
     costs: [40, 90, 160],
-    levels: ["75 balls", "100 balls", "125 balls", "150 balls"],
+    levels: HOPPER_CAPACITIES.map((capacity, tier) => `${capacity} balls, $${FULL_LOAD_BONUSES[tier]} bonus`),
   },
   {
     id: "collector",
@@ -500,6 +500,9 @@ export class RangeManagement {
   get hopperCapacity() {
     return HOPPER_CAPACITIES[this.levels.hopper];
   }
+  get fullLoadBonus() {
+    return FULL_LOAD_BONUSES[this.levels.hopper];
+  }
   get maxSpeed() {
     return ENGINE_SPEEDS[this.levels.engine];
   }
@@ -767,11 +770,11 @@ export class RangeManagement {
     return accepted;
   }
 
-  /** Return the load to the depot. A completely full hopper earns FULL_LOAD_BONUS on top. */
+  /** Return the load to the depot. A completely full hopper earns its tier's bonus on top. */
   unload(): { count: number; bonus: number } {
     const count = this.hopper;
     if (!count) return { count: 0, bonus: 0 };
-    const bonus = count === this.hopperCapacity ? FULL_LOAD_BONUS : 0;
+    const bonus = count === this.hopperCapacity ? this.fullLoadBonus : 0;
     this.reserve += count;
     this.returned += count;
     this.deliveries++;
