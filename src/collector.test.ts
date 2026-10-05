@@ -289,8 +289,11 @@ test("cooldowns do not shorten a slower arrival queue or delay newly opened bays
   assert.equal(golfer.status, "playing");
 
   sim.cash = 10000;
-  sim.buy("bays");
+  for (const id of ["engine", "hopper", "collector"] as const)
+    assert.equal(sim.buy(id), "ok");
+  assert.equal(sim.golfers.length, 9);
   const newBay = sim.golfers.at(-1)!;
+  assert.equal(newBay.status, "empty");
   assert.equal(newBay.cooldownUntil, 0);
   sim.update(3.01);
   assert.equal(newBay.status, "playing");
@@ -508,14 +511,12 @@ test("shots pay, streaks tip, and upgrades cost cash and change the cart", () =>
   const before = sim.reserve;
   assert.equal(sim.buy("stock"), "ok");
   assert.equal(sim.reserve, before + STOCK_BUNDLE);
-  assert.equal(sim.buy("bays"), "ok");
+  assert.equal(sim.buy("bays"), "maxed");
   assert.equal(sim.golfers.length, 9);
   assert.equal(sim.golfers[8].status, "empty");
   assert.equal(sim.buy("engine"), "ok");
   assert.equal(sim.maxSpeed, 11.5);
-  assert.equal(sim.rangeYards, 100);
-  assert.equal(sim.pace, 2);
-  assert.equal(sim.buy("range"), "ok");
+  assert.equal(sim.buy("range"), "maxed");
   assert.equal(sim.rangeYards, 150);
   assert.ok(sim.pace < 2);
   assert.ok(sim.spent > 0);

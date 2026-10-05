@@ -11,6 +11,10 @@ import {
   STOCK_BUNDLE,
   INITIAL_RESERVE,
   FULL_LOAD_BONUS,
+  CART_UPGRADE_POINTS,
+  EXPANSION_POINTS,
+  RANGE_TIERS,
+  BAY_COUNTS,
   validateManagementSnapshot,
 } from "./management";
 import type { SpillCause, UpgradeId, UpgradeCategory, ManagementSnapshot } from "./management";
@@ -97,7 +101,7 @@ $("#app").innerHTML = `
     <p class="menu-controls">WASD drive · Space brake · E return · B shop<br>Drag mouse to look · Scroll to zoom · C camera · Esc / P menu</p>
   </dialog>
 
-  <div id="loading-screen" class="welcome-overlay"><section class="welcome-card"><div class="welcome-emblem">${icon("flag", 24)}</div><span class="eyebrow">THE DRIVING RANGE</span><h2>Pine Valley.<em>A day's work, outdoors.</em></h2><p>Take the wheel. Keep the bays supplied. Compete for the longest time on the range.</p><div class="welcome-rules"><div class="briefing-step"><span>01</span><div><strong>Collect & return</strong><p>Drive over loose balls. Stop at the depot and press <kbd>E</kbd> to unload.</p></div></div><div class="briefing-step"><span>02</span><div><strong>Earn & improve</strong><p>Golfers pay for every shot. Press <kbd>B</kbd> at the depot for equipment and range upgrades.</p></div></div><div class="briefing-step"><span>03</span><div><strong>Keep the range running</strong><p>The instant the last golfer leaves, your shift ends. Your score is survival time: the longest time wins.</p></div></div></div><div class="welcome-risks">Protect your load: collisions spill <b>50%</b>, ball strikes spill <b>15%</b>.</div><button id="start" class="primary-button" disabled><span id="loading-label">Preparing the range…</span>${icon("arrow", 18)}</button><div class="loading-track"><i id="loading-progress"></i></div><small id="loading-caption">Preparing the course and equipment</small><small id="best-score" class="best-score" hidden></small></section></div>
+  <div id="loading-screen" class="welcome-overlay"><section class="welcome-card"><div class="welcome-emblem">${icon("flag", 24)}</div><span class="eyebrow">THE DRIVING RANGE</span><h2>Pine Valley.<em>A day's work, outdoors.</em></h2><p>Take the wheel. Keep the bays supplied. Compete for the longest time on the range.</p><div class="welcome-rules"><div class="briefing-step"><span>01</span><div><strong>Collect & return</strong><p>Drive over loose balls. Stop at the depot and press <kbd>E</kbd> to unload.</p></div></div><div class="briefing-step"><span>02</span><div><strong>Earn & improve</strong><p>Golfers pay for every shot. Upgrade your cart at the depot with <kbd>B</kbd>; the range grows automatically.</p></div></div><div class="briefing-step"><span>03</span><div><strong>Keep the range running</strong><p>The instant the last golfer leaves, your shift ends. Your score is survival time: the longest time wins.</p></div></div></div><div class="welcome-risks">Protect your load: collisions spill <b>50%</b>, ball strikes spill <b>15%</b>.</div><button id="start" class="primary-button" disabled><span id="loading-label">Preparing the range…</span>${icon("arrow", 18)}</button><div class="loading-track"><i id="loading-progress"></i></div><small id="loading-caption">Preparing the course and equipment</small><small id="best-score" class="best-score" hidden></small></section></div>
   <div id="gameover-screen" class="welcome-overlay" hidden><section class="welcome-card"><div class="welcome-emblem">${icon("flag", 24)}</div><span class="eyebrow">SHIFT REPORT</span><h2>Day's end.</h2><p id="gameover-summary"></p><div class="menu-stats"><div><strong id="final-time">00:00</strong><span>Survival time</span></div><div><strong id="final-served">0</strong><span>Golfers served</span></div><div><strong id="final-best">00:00</strong><span>Best time</span></div></div><button id="restart" class="primary-button">Start a new shift ${icon("reset", 18)}</button></section></div>
   <dialog id="dialog"><button id="dialog-close" class="icon-button dialog-close" aria-label="Close dialog">${icon("close")}</button><div id="dialog-content"></div></dialog>
   <div id="error-screen" class="welcome-overlay" hidden><section class="welcome-card"><span class="eyebrow">RANGE UNAVAILABLE</span><h2>Unable to open.</h2><p id="error-message"></p><button id="reload" class="primary-button">Reload range ${icon("reset", 18)}</button></section></div>
@@ -228,8 +232,8 @@ function validateSavePayload(input: unknown): GameSave {
   const source = record(input), preferences = record(source.preferences), main = record(source.main), savedWorld = record(source.world);
   validateWorldState(savedWorld);
   const management = validateManagementSnapshot(source.management);
-  if (savedWorld.version !== 1 || savedWorld.rangeYards !== [100, 150, 200, 250, 300][management.levels.range]
-    || savedWorld.bayCount !== [7, 9, 12][management.levels.bays]) throw new Error("The saved course does not match its range upgrades.");
+  if (savedWorld.version !== 1 || savedWorld.rangeYards !== RANGE_TIERS[management.levels.range]
+    || savedWorld.bayCount !== BAY_COUNTS[management.levels.bays]) throw new Error("The saved course does not match its range upgrades.");
   if (typeof preferences.wind !== "number" || !Number.isFinite(preferences.wind) || preferences.wind < 0 || preferences.wind > 5
     || (preferences.quality !== "high" && preferences.quality !== "low")
     || (preferences.camera !== "chase" && preferences.camera !== "overview") || typeof preferences.sound !== "boolean"
@@ -337,6 +341,9 @@ function loadSave(id: string) {
     sim.restoreState(saved.payload.management);
     applyUpgrades();
     world.restoreState(saved.payload.world);
+    // Older saves may earn extra growth on load. Apply it after restoring the
+    // saved scene so its layout cannot overwrite the automatic expansion.
+    applyUpgrades();
     world.syncGolfers(sim.golfers, sim.time);
     world.setHopper(sim.hopper);
   } catch (error) {
@@ -399,10 +406,13 @@ function applyUpgrades() {
 function renderShop() {
   const groups: Record<UpgradeCategory, string> = {
     cart: "Cart",
-    range: "Range",
+    range: "Range extras",
     supply: "Supply",
   };
-  $("#shop-list").innerHTML = (Object.keys(groups) as UpgradeCategory[])
+  const next = sim.nextGrowth;
+  const maxPoints = (RANGE_TIERS.length - 1) * EXPANSION_POINTS;
+  const progression = `<div class="shop-growth"><div><strong>Automatic range growth</strong><span>${sim.cartPoints} / ${maxPoints} points</span></div><progress aria-label="Cart upgrade points" max="${maxPoints}" value="${sim.cartPoints}"></progress><p>${CART_UPGRADE_POINTS} points per cart upgrade. Every ${EXPANSION_POINTS} points grows the range and speeds up hitters.</p><strong>${sim.rangeYards} yards · ${sim.bays} bays</strong><p>${next ? `Next at ${next.points} points: ${next.yards} yards · ${next.bays} bays${next.dispenserBuffer > sim.dispenserBuffer ? ` · ${next.dispenserBuffer}-ball bay buffers` : ""}.` : "Range fully grown. All bays unlocked."}</p><p>Bay dispensers: ${sim.dispenserBuffer ? `${sim.dispenserBuffer} balls per bay` : "unlock automatically at 12 points"}.</p></div>`;
+  $("#shop-list").innerHTML = progression + (Object.keys(groups) as UpgradeCategory[])
     .map(
       (category) =>
         `<h3>${groups[category]}</h3>` +
@@ -413,7 +423,7 @@ function renderShop() {
               maxed = price === undefined;
             const now = u.repeat ? u.blurb : u.levels[level];
             const next = u.repeat ? "" : u.levels[level + 1];
-            const tier = u.repeat ? "" : ` <em>${level}/${u.costs.length}</em>`;
+            const tier = u.repeat ? "" : ` <em>${level}/${u.costs.length}${u.category === "cart" && !maxed ? ` · +${CART_UPGRADE_POINTS} points` : ""}</em>`;
             return `<div class="shop-row${maxed ? " maxed" : ""}"><div><strong>${u.name}${tier}</strong><span>${maxed ? now : next ? `${now} → ${next}` : now}</span></div><button data-buy="${u.id}" title="${u.blurb}">${maxed ? "Max" : money(price)}</button></div>`;
           })
           .join(""),
@@ -442,7 +452,9 @@ function toggleShop(open: boolean = $("#shop").hidden === true) {
   if (open) renderShop();
 }
 function buy(id: UpgradeId) {
-  const upgrade = UPGRADES.find((u) => u.id === id)!;
+  const upgrade = UPGRADES.find((u) => u.id === id);
+  if (!upgrade) return;
+  const previous = { yards: sim.rangeYards, bays: sim.bays, buffer: sim.dispenserBuffer };
   const result = sim.buy(id);
   if (result === "poor") {
     showNotice("Not enough cash.", `${upgrade.name} costs ${money(sim.price(id) ?? 0)}.`);
@@ -451,11 +463,17 @@ function buy(id: UpgradeId) {
   if (result === "maxed") return;
   applyUpgrades();
   audio.play("unload");
+  const expanded = sim.rangeYards > previous.yards || sim.bays > previous.bays;
+  const upgradeDetail = id === "stock"
+    ? `${STOCK_BUNDLE} balls added to the depot.`
+    : `${upgrade.name}: ${upgrade.levels[sim.levels[id]]}.`;
+  const growthDetail = [
+    sim.rangeYards > previous.yards ? "Faster hitters" : "",
+    sim.dispenserBuffer > previous.buffer ? `${sim.dispenserBuffer}-ball bay buffers` : "",
+  ].filter(Boolean).join(" · ");
   showNotice(
-    id === "stock"
-      ? `${STOCK_BUNDLE} balls added to the depot.`
-      : `${upgrade.name}: ${upgrade.levels[sim.levels[id]]}.`,
-    `${money(sim.cash)} left.`,
+    expanded ? `Range expanded · ${sim.rangeYards} yd · ${sim.bays} bays` : upgradeDetail,
+    `${expanded ? `${upgradeDetail} ` : ""}${growthDetail ? `${growthDetail}. ` : ""}${money(sim.cash)} left.`,
   );
   renderShop();
   updateHUD();
@@ -838,7 +856,7 @@ $("#sound").addEventListener("click", () => {
 });
 $("#help").addEventListener("click", () =>
   openDialog(
-    `<span class="eyebrow">KEEP THE RANGE RUNNING</span><h2>Your shift, explained.</h2><div class="help-step"><span>01</span><div><strong>Collect and return.</strong><p><kbd>W A S D</kbd> or arrow keys drive. <kbd>Space</kbd> brakes. Drive over white balls to fill your 75-ball hopper. A full hopper turns on the rotating roof beacon. Stop at the orange depot and press <kbd>E</kbd> to return them. Deliver a completely full hopper and you pocket a <b>$5</b> bonus.</p></div></div><div class="help-step"><span>02</span><div><strong>Keep your golfers supplied.</strong><p>Supply starts at 50 balls. Seven golfers keep hitting while the depot has balls, faster when supply is high and slower when it is low. Empty supply stops their swings and makes them lose patience. Returning a load replenishes the supply and helps them recover.</p></div></div><div class="help-step"><span>03</span><div><strong>Protect your load.</strong><p>Hit a tree, rock, log, fence, sign, or wildlife and <b>50%</b> of your current load spills out. A flying golf ball hitting the cart spills <b>15%</b>. Losses round up to whole balls. Spilled balls bounce onto the range for you to collect again. Sand traps slow the cart by <b>30%</b> until you drive back onto grass.</p></div></div><div class="help-step"><span>04</span><div><strong>Earn and upgrade.</strong><p>Every ball a golfer hits pays you, and happy golfers tip. Park at the depot and press <kbd>B</kbd> for the shop: engine, hopper, collector width, cage, bumper, range length, more bays, bay dispensers, a second depot, obstacle clearing, nets, or a driverless helper cart. The range starts at 100 yards with slow, patient hitters. Each extra 50 yards speeds the golfers up, reveals more hazards, and from 200 yards brings grinders, from 250 pros. Golfers whose patience hits zero walk out, and how happy the rest are decides who shows up next. The instant the last golfer leaves the range, your shift ends. Your score is the time you kept the range running. Compete for the longest survival time; cash buys upgrades.</p></div></div><div class="help-step"><span>05</span><div><strong>Find your way.</strong><p>The map stays in the bottom right. Drag with the mouse to look around the cart and scroll to zoom. <kbd>C</kbd> changes camera, <kbd>Esc</kbd> or <kbd>P</kbd> opens the menu, and <kbd>R</kbd> recovers your cart. Touch arrows and the square brake button are available on smaller screens.</p></div></div><button data-action="close" class="primary-button">Back to menu ${icon("arrow", 18)}</button>`,
+    `<span class="eyebrow">KEEP THE RANGE RUNNING</span><h2>Your shift, explained.</h2><div class="help-step"><span>01</span><div><strong>Collect and return.</strong><p><kbd>W A S D</kbd> or arrow keys drive. <kbd>Space</kbd> brakes. Drive over white balls to fill your 75-ball hopper. A full hopper turns on the rotating roof beacon. Stop at the orange depot and press <kbd>E</kbd> to return them. Deliver a completely full hopper and you pocket a <b>$5</b> bonus.</p></div></div><div class="help-step"><span>02</span><div><strong>Keep your golfers supplied.</strong><p>Supply starts at 50 balls. Seven golfers keep hitting while the depot has balls, faster when supply is high and slower when it is low. Empty supply stops their swings and makes them lose patience. Returning a load replenishes the supply and helps them recover.</p></div></div><div class="help-step"><span>03</span><div><strong>Protect your load.</strong><p>Hit a tree, rock, log, fence, sign, or wildlife and <b>50%</b> of your current load spills out. A flying golf ball hitting the cart spills <b>15%</b>. Losses round up to whole balls. Spilled balls bounce onto the range for you to collect again. Sand traps slow the cart by <b>30%</b> until you drive back onto grass.</p></div></div><div class="help-step"><span>04</span><div><strong>Earn and upgrade.</strong><p>Every ball a golfer hits pays you, and happy golfers tip. Park at the depot and press <kbd>B</kbd> for the shop: engine, hopper, collector width, cage, and bumper. Each cart upgrade earns <b>2 points</b>. Every <b>6 points</b> automatically adds 50 yards, opens 2–3 more bays, and speeds up the golfers. The range grows from 100 yards and 7 bays to 300 yards and 16 bays. Bay dispensers unlock at 12 points and improve at 24. Grinders can arrive from 200 yards, pros from 250. A second depot, obstacle clearing, nets, a driverless helper cart, and fresh balls remain separate purchases. Golfers whose patience hits zero walk out, and how happy the rest are decides who shows up next. The instant the last golfer leaves the range, your shift ends. Your score is the time you kept the range running. Compete for the longest survival time; cash buys upgrades.</p></div></div><div class="help-step"><span>05</span><div><strong>Find your way.</strong><p>The map stays in the bottom right. Drag with the mouse to look around the cart and scroll to zoom. <kbd>C</kbd> changes camera, <kbd>Esc</kbd> or <kbd>P</kbd> opens the menu, and <kbd>R</kbd> recovers your cart. Touch arrows and the square brake button are available on smaller screens.</p></div></div><button data-action="close" class="primary-button">Back to menu ${icon("arrow", 18)}</button>`,
   ),
 );
 $("#settings").addEventListener("click", () =>
@@ -1130,6 +1148,10 @@ async function init() {
           earned: sim.earned,
           reputation: sim.reputation,
           levels: { ...sim.levels },
+          cartPoints: sim.cartPoints,
+          rangeYards: sim.rangeYards,
+          bays: sim.bays,
+          nextGrowth: sim.nextGrowth,
           walkouts: sim.walkouts,
           arrivals: sim.arrivals,
           visitorCarts: world.golfCarts.map(cart => ({
