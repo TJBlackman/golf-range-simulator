@@ -67,6 +67,8 @@ const TURN_RATES: Record<AnimalMode, number> = {
 };
 const SPOOK_DISTANCE = 11;
 const FIELD = { minX: -50, maxX: 50, minZ: 14, maxZ: TEE.z + 100 * YARD - 6 };
+/** Painted front edge of the driving area, joining the side fences. */
+export const FRONT_BOUNDARY = { minX: -54, maxX: 54, z: 8 };
 /** Bay centres along the tee line, in the order bays open. */
 export const BAY_X = [-12, -8, -4, 0, 4, 8, 12, -16, 16, -20, 20, -24];
 const HELPER_HOPPER = 80;
@@ -458,6 +460,15 @@ export class RangeScene {
     path.position.set(0, 0.013, -5);
     path.receiveShadow = true;
     this.scene.add(path);
+    const boundary = new THREE.Mesh(
+      new THREE.PlaneGeometry(FRONT_BOUNDARY.maxX - FRONT_BOUNDARY.minX, 0.35),
+      new THREE.MeshStandardMaterial({ color: "#ffffff", roughness: 1 }),
+    );
+    boundary.name = "FrontBoundaryLine";
+    boundary.rotation.x = -Math.PI / 2;
+    boundary.position.set(0, 0.025, FRONT_BOUNDARY.z);
+    boundary.receiveShadow = true;
+    this.scene.add(boundary);
     this.buildFences();
   }
 
@@ -671,7 +682,7 @@ export class RangeScene {
         minX: -57,
         maxX: 57,
         minZ: -5,
-        maxZ: 8,
+        maxZ: FRONT_BOUNDARY.z,
       },
       {
         id: "depot",
