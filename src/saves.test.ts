@@ -60,6 +60,38 @@ test("exported and restored management state do not share mutable arrays with ca
   assert.equal(sim.levels.range, 2);
 });
 
+test("bay cooldowns survive saves with their remaining simulation time", () => {
+  const sim = new RangeManagement();
+  while (sim.golfers.some(g => g.status !== "playing")) sim.update(0.05);
+  sim.reserve = 5000;
+  sim.reputation = 100;
+  const golfer = sim.golfers[0];
+  golfer.waiting = true;
+  golfer.patience = 0.01;
+  sim.update(0.05);
+  sim.update(golfer.until - sim.time);
+  sim.update(5);
+  const saved = sim.exportState();
+  const remaining = saved.golfers[0].cooldownUntil - saved.time;
+  assert.ok(Math.abs(remaining - 10) < 1e-9);
+  const copy = new RangeManagement();
+  copy.restoreState(saved);
+  assert.equal(copy.time, saved.time);
+  assert.equal(copy.golfers[0].cooldownUntil, saved.golfers[0].cooldownUntil);
+  copy.update(0);
+  assert.equal(copy.golfers[0].cooldownUntil - copy.time, remaining);
+  copy.update(9.99);
+  assert.equal(copy.golfers[0].status, "empty");
+  copy.update(0.02);
+  assert.equal(copy.golfers[0].status, "playing");
+  assert.equal(copy.golfers[0].cooldownUntil, 0);
+
+  const legacy = JSON.parse(JSON.stringify(saved));
+  for (const g of legacy.golfers) delete g.cooldownUntil;
+  copy.restoreState(legacy);
+  assert.ok(copy.golfers.every(g => g.cooldownUntil === 0));
+});
+
 test("invalid management saves are rejected before any live state is changed", () => {
   const sim = new RangeManagement(), before = sim.exportState();
   const badStates = [
@@ -68,6 +100,8 @@ test("invalid management saves are rejected before any live state is changed", (
     { ...before, golfers: [{ ...before.golfers[0], type: "constructor" }, ...before.golfers.slice(1)] },
     { ...before, golfers: [{ ...before.golfers[0], leftHanded: "yes" }, ...before.golfers.slice(1)] },
     { ...before, golfers: [{ ...before.golfers[0], booked: 1 }, ...before.golfers.slice(1)] },
+    { ...before, golfers: [{ ...before.golfers[0], cooldownUntil: -1 }, ...before.golfers.slice(1)] },
+    { ...before, golfers: [{ ...before.golfers[0], cooldownUntil: Infinity }, ...before.golfers.slice(1)] },
     { ...before, golfers: [{ ...before.golfers[0], nextShot: Infinity }, ...before.golfers.slice(1)] },
     { ...before, golfers: before.golfers.slice(1) }, { ...before, over: "false" },
     { ...before, events: [{ kind: "arrival", golfer: 99, type: "casual" }] },
