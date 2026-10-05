@@ -103,6 +103,12 @@ test("invalid management saves are rejected before any live state is changed", (
     { ...before, golfers: [{ ...before.golfers[0], cooldownUntil: -1 }, ...before.golfers.slice(1)] },
     { ...before, golfers: [{ ...before.golfers[0], cooldownUntil: Infinity }, ...before.golfers.slice(1)] },
     { ...before, golfers: [{ ...before.golfers[0], nextShot: Infinity }, ...before.golfers.slice(1)] },
+    ...[4.99, 10.01, NaN, Infinity].map(reactionSeconds => ({
+      ...before, golfers: [{ ...before.golfers[0], reactionSeconds }, ...before.golfers.slice(1)],
+    })),
+    ...[-1, before.golfers[0].reactionSeconds + 0.01, NaN, Infinity].map(reactionRemaining => ({
+      ...before, golfers: [{ ...before.golfers[0], reactionRemaining }, ...before.golfers.slice(1)],
+    })),
     { ...before, golfers: before.golfers.slice(1) }, { ...before, over: "false" },
     { ...before, events: [{ kind: "arrival", golfer: 99, type: "casual" }] },
   ];
@@ -110,6 +116,31 @@ test("invalid management saves are rejected before any live state is changed", (
     assert.throws(() => sim.restoreState(bad));
     assert.deepEqual(sim.exportState(), before);
   }
+});
+
+test("golfer reaction windows survive saves and resume without rerolling or advancing while closed", () => {
+  const original = new RangeManagement();
+  while (original.golfers.some(g => g.status !== "playing")) original.update(0.05);
+  original.reserve = 0;
+  for (const golfer of original.golfers) golfer.nextShot = original.time;
+  original.update(0);
+  original.update(2);
+  assert.ok(original.golfers.every(g => g.reactionRemaining > 0));
+  const saved = JSON.parse(JSON.stringify(original.exportState()));
+  const copy = new RangeManagement();
+  copy.restoreState(saved);
+  assert.deepEqual(copy.exportState(), saved);
+  for (let frame = 0; frame < 1400; frame++) assert.deepEqual(copy.update(0.05), original.update(0.05));
+  assert.deepEqual(copy.exportState(), original.exportState());
+
+  const legacy = JSON.parse(JSON.stringify(saved));
+  for (const golfer of legacy.golfers) {
+    delete golfer.reactionSeconds;
+    delete golfer.reactionRemaining;
+  }
+  copy.restoreState(legacy);
+  assert.ok(copy.golfers.every(g => g.reactionSeconds >= 5 && g.reactionSeconds <= 10 && g.reactionRemaining === 0));
+  assert.equal(new Set(copy.golfers.map(g => g.reactionSeconds)).size, copy.golfers.length);
 });
 
 test("automatic saves, named saves, overwrite, and delete keep independent durable slots", () => {
