@@ -18,6 +18,8 @@ import {
   INITIAL_LINEUP,
   OPENING_FIRST_CART_SECONDS,
   OPENING_CART_GAP_SECONDS,
+  GOLFER_REACTION_SECONDS,
+  GOLFER_TYPES,
   spillAmount,
 } from "./management.ts";
 import {
@@ -172,8 +174,9 @@ test("golfers consume finite supply, stop when empty, and lose patience", () => 
 test("collecting does not feed golfers until a delivery, which resumes play and restores morale", () => {
   const sim = new RangeManagement(seeded());
   while (sim.reserve > 0 && sim.time < 300) advance(sim, 1);
-  advance(sim, 8);
+  while (sim.satisfaction === 100 && sim.time < 300) advance(sim, 1);
   const unhappy = sim.satisfaction;
+  assert.ok(unhappy < 100);
   sim.collect(30);
   assert.equal(sim.reserve, 0);
   assert.deepEqual(sim.unload(), { count: 30, bonus: 0 });
@@ -219,6 +222,8 @@ test("golfer moods escalate before a walkout and recover when resupplied", () =>
   sim.reserve = 0;
   golfer.nextShot = sim.time;
   sim.update(0.05);
+  assert.equal(getGolferMood(golfer), "happy");
+  sim.update(golfer.reactionRemaining);
   assert.equal(getGolferMood(golfer), "waiting");
   golfer.patience = 34;
   assert.equal(getGolferMood(golfer), "mad");
@@ -240,6 +245,120 @@ test("golfer moods escalate before a walkout and recover when resupplied", () =>
   assert.equal(getGolferMood(waiting), "mad");
   advance(sim, 30);
   assert.equal(getGolferMood(waiting), "happy");
+});
+
+test("empty supply gives each golfer a 5–10 second grace period before reacting", () => {
+  for (const roll of [0, 1]) {
+    const sim = new RangeManagement(() => roll);
+    open(sim);
+    sim.reserve = 0;
+    const golfer = sim.golfers[0];
+    golfer.nextShot = sim.time;
+    const delay = GOLFER_REACTION_SECONDS[roll];
+    assert.equal(golfer.reactionSeconds, delay);
+    assert.equal(sim.update(0).length, 0);
+    assert.equal(golfer.waiting, true);
+    assert.equal(golfer.reactionRemaining, delay);
+    assert.equal(getGolferMood(golfer), "happy");
+    // Repeated failed shots keep the same timer, and do not consume any balls.
+    for (let second = 0; second < delay - 1; second++) {
+      assert.equal(sim.update(1).length, 0);
+      assert.equal(golfer.patience, 100);
+      assert.equal(getGolferMood(golfer), "happy");
+    }
+    sim.update(1);
+    assert.equal(golfer.reactionRemaining, 0);
+    assert.equal(getGolferMood(golfer), "waiting");
+    assert.equal(golfer.patience, 100);
+    sim.update(1);
+    assert.equal(golfer.patience, 100 - GOLFER_TYPES[golfer.type].drain * 7.5 / delay);
+  }
+});
+
+test("a frame crossing the reaction deadline only drains patience after the grace period", () => {
+  const sim = new RangeManagement(seeded());
+  open(sim);
+  sim.reserve = 0;
+  const golfer = sim.golfers[0];
+  golfer.nextShot = sim.time;
+  sim.update(0);
+  sim.update(golfer.reactionSeconds + 0.5);
+  assert.equal(golfer.reactionRemaining, 0);
+  assert.equal(getGolferMood(golfer), "waiting");
+  assert.equal(golfer.patience, 100 - 0.5 * GOLFER_TYPES[golfer.type].drain * 7.5 / golfer.reactionSeconds);
+});
+
+test("golfers of the same type react, get angry, and walk out at different times", () => {
+  const sim = new RangeManagement(seeded());
+  open(sim);
+  sim.reserve = 0;
+  for (const golfer of sim.golfers) {
+    golfer.type = "casual";
+    golfer.patience = 100;
+    golfer.nextShot = sim.time;
+    assert.ok(golfer.reactionSeconds >= 5 && golfer.reactionSeconds <= 10);
+  }
+  sim.update(0);
+  assert.equal(new Set(sim.golfers.map(g => g.reactionSeconds)).size, GOLFER_COUNT);
+  const walkouts = new Map<number, number>();
+  let mixedReactions = false, mixedAnger = false;
+  const started = sim.time;
+  for (let frame = 0; frame < 1600 && walkouts.size < GOLFER_COUNT; frame++) {
+    sim.update(0.05);
+    const moods = new Set(sim.present.map(getGolferMood));
+    mixedReactions ||= moods.has("happy") && moods.has("waiting");
+    mixedAnger ||= moods.has("waiting") && moods.has("mad");
+    for (const event of sim.takeEvents())
+      if (event.kind === "walkout" && !walkouts.has(event.golfer)) walkouts.set(event.golfer, sim.time - started);
+  }
+  assert.ok(mixedReactions);
+  assert.ok(mixedAnger);
+  assert.equal(walkouts.size, GOLFER_COUNT);
+  const times = [...walkouts.values()];
+  assert.ok(Math.max(...times) - Math.min(...times) > 5);
+});
+
+test("resupply cancels a pending reaction, and a new shortage gets a full grace period", () => {
+  const sim = new RangeManagement(seeded());
+  open(sim);
+  sim.reserve = 0;
+  const golfer = sim.golfers[0];
+  golfer.nextShot = sim.time;
+  sim.update(0);
+  sim.update(2);
+  assert.ok(golfer.reactionRemaining > 0);
+  sim.collect(20);
+  sim.unload();
+  assert.ok(sim.update(0.05).some(shot => shot.golfer === golfer.id));
+  assert.equal(golfer.waiting, false);
+  assert.equal(golfer.reactionRemaining, 0);
+  assert.equal(getGolferMood(golfer), "happy");
+  sim.reserve = 0;
+  golfer.nextShot = sim.time;
+  sim.update(0);
+  assert.equal(golfer.reactionRemaining, golfer.reactionSeconds);
+  sim.update(golfer.reactionSeconds - 0.1);
+  assert.equal(golfer.patience, 100);
+  assert.equal(getGolferMood(golfer), "happy");
+});
+
+test("individual reaction speeds also stagger mood recovery", () => {
+  const trials = [0, 1].map(roll => {
+    const sim = new RangeManagement(() => roll);
+    open(sim);
+    const golfer = sim.golfers[0];
+    golfer.patience = 50;
+    golfer.waiting = true;
+    golfer.nextShot = sim.time;
+    sim.collect(20);
+    sim.unload();
+    assert.equal(getGolferMood(golfer), "waiting");
+    advance(sim, 3.5);
+    return golfer;
+  });
+  assert.equal(getGolferMood(trials[0]), "happy");
+  assert.equal(getGolferMood(trials[1]), "mad");
+  assert.ok(trials[0].patience > trials[1].patience);
 });
 
 test("vacated bays cool down for 15 seconds even at the highest rating", () => {

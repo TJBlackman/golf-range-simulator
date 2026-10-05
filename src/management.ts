@@ -17,6 +17,8 @@ export const OPENING_FIRST_CART_SECONDS = [0.3, 0.8] as const;
 export const OPENING_CART_GAP_SECONDS = [0.7, 1.5] as const;
 /** Share of golfers who set up on the other side of the ball. */
 export const LEFT_HANDED_CHANCE = 0.1;
+/** Each golfer takes this many seconds to react to running out of balls. */
+export const GOLFER_REACTION_SECONDS = [5, 10] as const;
 /** Range length per tier, in yards. */
 export const RANGE_TIERS = [100, 150, 200, 250, 300];
 /** Shot interval multiplier per range tier: short ranges play slow. */
@@ -111,6 +113,10 @@ export type GolferState = {
   booked: boolean;
   patience: number;
   waiting: boolean;
+  /** Rolled per visitor; longer reactions also mean slower patience loss and recovery. */
+  reactionSeconds: number;
+  /** Remaining grace period for the current shortage, measured in simulation seconds. */
+  reactionRemaining: number;
   nextShot: number;
   shots: number;
   streak: number;
@@ -123,10 +129,11 @@ export type GolferState = {
 };
 export type GolferMood = "happy" | "waiting" | "mad" | "furious";
 
-export function getGolferMood(golfer: Pick<GolferState, "status" | "patience" | "waiting">): GolferMood {
+export function getGolferMood(golfer: Pick<GolferState, "status" | "patience" | "waiting" | "reactionRemaining">): GolferMood {
+  const reacting = golfer.waiting && golfer.reactionRemaining === 0;
   if (golfer.status === "leaving" || golfer.patience <= 15) return "furious";
-  if (golfer.patience < 35 || (!golfer.waiting && golfer.patience < 70)) return "mad";
-  return golfer.waiting ? "waiting" : "happy";
+  if (golfer.patience < 35 || (!reacting && golfer.patience < 70)) return "mad";
+  return reacting ? "waiting" : "happy";
 }
 export type ShotOrder = { golfer: number; number: number; lost: boolean };
 export type SimEvent =
@@ -334,12 +341,19 @@ export function validateManagementSnapshot(input: unknown): ManagementSnapshot {
   const golfers = source.golfers.map((value, index): GolferState => {
     const saved = record(value);
     if (saved.id !== index || typeof saved.status !== "string" || !["playing", "leaving", "empty"].includes(saved.status)) throw new Error("The saved golfer status is invalid.");
+    // Older saves get staggered timing without consuming the saved random sequence.
+    const reactionSeconds = saved.reactionSeconds === undefined
+      ? GOLFER_REACTION_SECONDS[0] + (GOLFER_REACTION_SECONDS[1] - GOLFER_REACTION_SECONDS[0]) * index / (MAX_BAYS - 1)
+      : number(saved.reactionSeconds, GOLFER_REACTION_SECONDS[1]);
+    if (reactionSeconds < GOLFER_REACTION_SECONDS[0]) throw new Error("The saved golfer reaction time is invalid.");
     return {
       id: index, type: golferType(saved.type), status: saved.status as GolferStatus,
       // Saves written before handedness and the opening lineup existed hold seated right-handers.
       leftHanded: saved.leftHanded === undefined ? false : boolean(saved.leftHanded),
       booked: saved.booked === undefined ? false : boolean(saved.booked),
       patience: number(saved.patience, 100), waiting: boolean(saved.waiting),
+      reactionSeconds,
+      reactionRemaining: saved.reactionRemaining === undefined ? 0 : number(saved.reactionRemaining, reactionSeconds),
       nextShot: number(saved.nextShot), shots: number(saved.shots, 1e12, true),
       streak: number(saved.streak, 1e12, true), buffer: number(saved.buffer, DISPENSER_BUFFERS[levels.dispensers], true),
       until: number(saved.until),
@@ -408,6 +422,8 @@ export class RangeManagement {
     booked: true,
     patience: 100,
     waiting: false,
+    reactionSeconds: (GOLFER_REACTION_SECONDS[0] + GOLFER_REACTION_SECONDS[1]) / 2,
+    reactionRemaining: 0,
     nextShot: 0,
     shots: 0,
     streak: 0,
@@ -586,6 +602,12 @@ export class RangeManagement {
         continue;
       }
       const profile = GOLFER_TYPES[golfer.type];
+      let patienceDt = dt;
+      if (golfer.waiting) {
+        // Only the part of this frame after the grace period drains patience.
+        patienceDt = Math.max(0, dt - golfer.reactionRemaining);
+        golfer.reactionRemaining = Math.max(0, golfer.reactionRemaining - dt);
+      }
       if (this.time >= golfer.nextShot) {
         if (golfer.buffer < this.dispenserBuffer && this.reserve > 0) {
           golfer.buffer++;
@@ -597,6 +619,8 @@ export class RangeManagement {
           golfer.shots++;
           golfer.streak++;
           golfer.waiting = false;
+          golfer.reactionRemaining = 0;
+          patienceDt = dt;
           golfer.nextShot =
             this.time + (profile.interval * this.pace + golfer.id * 0.03) * this.supplyPace;
           this.ballsHit++;
@@ -616,12 +640,15 @@ export class RangeManagement {
           shots.push({ golfer: golfer.id, number: golfer.shots, lost });
         } else if (!golfer.waiting) {
           golfer.waiting = true;
+          golfer.reactionRemaining = golfer.reactionSeconds;
+          patienceDt = 0;
           golfer.streak = 0;
         }
       }
+      const reactionPace = (GOLFER_REACTION_SECONDS[0] + GOLFER_REACTION_SECONDS[1]) / (2 * golfer.reactionSeconds);
       golfer.patience = clamp(
         golfer.patience +
-          dt * (golfer.waiting ? -profile.drain : profile.recover),
+          patienceDt * (golfer.waiting ? -profile.drain : profile.recover) * reactionPace,
         0,
         100,
       );
@@ -657,6 +684,7 @@ export class RangeManagement {
   private walkout(golfer: GolferState) {
     golfer.status = "leaving";
     golfer.waiting = false;
+    golfer.reactionRemaining = 0;
     golfer.until = this.time + WALKOUT_SECONDS;
     this.walkouts++;
     this.reputation = Math.max(0, this.reputation - 5);
@@ -672,6 +700,8 @@ export class RangeManagement {
     golfer.leftHanded = this.rollHandedness();
     golfer.patience = 100;
     golfer.waiting = false;
+    golfer.reactionSeconds = this.between(GOLFER_REACTION_SECONDS);
+    golfer.reactionRemaining = 0;
     golfer.shots = 0;
     golfer.streak = 0;
     golfer.buffer = 0;
@@ -745,6 +775,8 @@ export class RangeManagement {
         booked: false,
         patience: 0,
         waiting: false,
+        reactionSeconds: (GOLFER_REACTION_SECONDS[0] + GOLFER_REACTION_SECONDS[1]) / 2,
+        reactionRemaining: 0,
         nextShot: 0,
         shots: 0,
         streak: 0,
