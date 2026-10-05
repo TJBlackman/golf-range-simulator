@@ -1,189 +1,201 @@
 {
   "title": "Golf Range Simulator",
-  "style": "Original stylized low-poly",
+  "style": "Naturalistic PBR — timber, steel, organic foliage and realistic proportions",
   "coordinates": {
     "blender": "Z up, -Y forward",
     "glb": "Y up, +Z forward",
     "units": "metres"
   },
+  "source": "blender/build_realistic_assets.py",
+  "textures": "Original procedural textures, embedded PNG",
   "assets": [
     {
       "id": "tractor-picker",
       "file": "models/tractor-picker.glb",
-      "description": "Orange range tractor with wide disk picker, open rear hopper and independent wheel pivots.",
-      "triangles_source": 10532,
-      "mesh_count": 130,
+      "description": "Commercial orange range picker: curved painted panels, treaded tyres, engine grille, metal basket, operator cockpit and disk collection head.",
+      "triangles_source": 42836,
+      "mesh_count": 37,
+      "material_count": 12,
       "bounds_blender": [
         -1.5449999570846558,
-        -2.240000009536743,
-        -0.012499991804361343,
+        -2.23799991607666,
+        0.0004999821539968252,
         1.5449999570846558,
-        1.7325000762939453,
-        2.2850000858306885
+        1.7409999370574951,
+        2.259000062942505
       ],
       "animated": false,
       "animation": null,
-      "bytes": 753140,
-      "triangles_exported": 10532
+      "bytes": 1932212,
+      "triangles_exported": 42836
     },
     {
       "id": "golf-ball",
       "file": "models/golf-ball.glb",
-      "description": "Lightweight smooth white golf ball, regulation 42.67 mm diameter; instance this mesh.",
-      "triangles_source": 168,
+      "description": "Regulation 42.67 mm golf ball, smooth white urethane surface with baked dimple normal texture.",
+      "triangles_source": 720,
       "mesh_count": 1,
+      "material_count": 1,
       "bounds_blender": [
-        -0.021335000172257423,
-        -0.021335000172257423,
+        -0.021334988996386528,
+        -0.021334994584321976,
         0,
-        0.021335000172257423,
-        0.021335000172257423,
+        0.021334996446967125,
+        0.02133498713374138,
         0.04267000034451485
       ],
       "animated": false,
       "animation": null,
-      "bytes": 6168,
-      "triangles_exported": 168
+      "bytes": 27732,
+      "triangles_exported": 720
     },
     {
       "id": "target-flag",
       "file": "models/target-flag.glb",
-      "description": "Flexible-looking red flag, pole and target cup.",
-      "triangles_source": 100,
-      "mesh_count": 3,
+      "description": "Wind-formed textile target flag, fibreglass pin and dark lined cup.",
+      "triangles_source": 1128,
+      "mesh_count": 4,
+      "material_count": 4,
       "bounds_blender": [
-        -0.05999999865889549,
-        -0.05999999865889549,
+        -0.06000000238418579,
+        -0.06000000238418579,
         0,
-        0.550000011920929,
-        0.05999999865889549,
+        0.6299999952316284,
+        0.06000000238418579,
         2.0999999046325684
       ],
       "animated": false,
       "animation": null,
-      "bytes": 9112,
-      "triangles_exported": 100
+      "bytes": 46260,
+      "triangles_exported": 1128
     },
     {
       "id": "distance-marker-50",
       "file": "models/distance-marker-50.glb",
-      "description": "Freestanding 50 yard distance target.",
-      "triangles_source": 2008,
+      "description": "Painted aluminium 50 yard marker with inset face, timber supports and bolts.",
+      "triangles_source": 2476,
       "mesh_count": 5,
+      "material_count": 5,
       "bounds_blender": [
-        -0.6399999856948853,
-        -0.0690000131726265,
+        -0.6600000262260437,
+        -0.06700002402067184,
         0,
-        0.6399999856948853,
-        0.05999999865889549,
-        1.350000023841858
+        0.6600000858306885,
+        0.07500000298023224,
+        1.3499999046325684
       ],
       "animated": false,
       "animation": null,
-      "bytes": 87268,
-      "triangles_exported": 2008
+      "bytes": 227260,
+      "triangles_exported": 2476
     },
     {
       "id": "distance-marker-100",
       "file": "models/distance-marker-100.glb",
-      "description": "Freestanding 100 yard distance target.",
-      "triangles_source": 2096,
+      "description": "Painted aluminium 100 yard marker with inset face, timber supports and bolts.",
+      "triangles_source": 2564,
       "mesh_count": 5,
+      "material_count": 5,
       "bounds_blender": [
-        -0.6399999856948853,
-        -0.0690000131726265,
+        -0.6600000262260437,
+        -0.06700002402067184,
         0,
-        0.6399999856948853,
-        0.05999999865889549,
-        1.350000023841858
+        0.6600000858306885,
+        0.07500000298023224,
+        1.3499999046325684
       ],
       "animated": false,
       "animation": null,
-      "bytes": 90768,
-      "triangles_exported": 2096
+      "bytes": 232252,
+      "triangles_exported": 2564
     },
     {
       "id": "distance-marker-150",
       "file": "models/distance-marker-150.glb",
-      "description": "Freestanding 150 yard distance target.",
-      "triangles_source": 2020,
+      "description": "Painted aluminium 150 yard marker with inset face, timber supports and bolts.",
+      "triangles_source": 2488,
       "mesh_count": 5,
+      "material_count": 5,
       "bounds_blender": [
-        -0.6399999856948853,
-        -0.0690000131726265,
+        -0.6600000262260437,
+        -0.06700002402067184,
         0,
-        0.6399999856948853,
-        0.05999999865889549,
-        1.350000023841858
+        0.6600000858306885,
+        0.07500000298023224,
+        1.3499999046325684
       ],
       "animated": false,
       "animation": null,
-      "bytes": 87928,
-      "triangles_exported": 2020
+      "bytes": 228248,
+      "triangles_exported": 2488
     },
     {
       "id": "fence-section",
       "file": "models/fence-section.glb",
-      "description": "Three metre modular timber boundary fence.",
-      "triangles_source": 444,
-      "mesh_count": 6,
+      "description": "Three metre weathered split rail boundary fence with natural wood grain and dark steel fasteners.",
+      "triangles_source": 760,
+      "mesh_count": 3,
+      "material_count": 3,
       "bounds_blender": [
-        -1.5600000619888306,
-        -0.10999999940395355,
+        -1.540000081062317,
+        -0.09000000357627869,
         0,
-        1.5600000619888306,
-        0.10999999940395355,
-        1.309999942779541
+        1.5399999618530273,
+        0.09000000357627869,
+        1.2290000915527344
       ],
       "animated": false,
       "animation": null,
-      "bytes": 34720,
-      "triangles_exported": 444
+      "bytes": 225812,
+      "triangles_exported": 760
     },
     {
       "id": "tree-pine",
       "file": "models/tree-pine.glb",
-      "description": "Stylized evergreen with three layered foliage tiers.",
-      "triangles_source": 70,
-      "mesh_count": 4,
+      "description": "Natural Scots pine: tapered bark trunk, irregular radial branches and cutout needle sprays, two material groups for instancing.",
+      "triangles_source": 3532,
+      "mesh_count": 2,
+      "material_count": 2,
       "bounds_blender": [
-        -0.949999988079071,
-        -0.949999988079071,
-        0,
-        0.949999988079071,
-        0.949999988079071,
-        3.049999952316284
+        -1.2552562952041626,
+        -1.358274221420288,
+        -0.004357794765383005,
+        1.3132210969924927,
+        1.2615500688552856,
+        3.26354718208313
       ],
       "animated": false,
       "animation": null,
-      "bytes": 9068,
-      "triangles_exported": 70
+      "bytes": 559160,
+      "triangles_exported": 3532
     },
     {
       "id": "tree-broadleaf",
       "file": "models/tree-broadleaf.glb",
-      "description": "Chunky broadleaf tree with faceted crown.",
-      "triangles_source": 200,
-      "mesh_count": 6,
+      "description": "Natural oak: irregular trunk and branching, open crown of textured cutout leaf sprays, two material groups for instancing.",
+      "triangles_source": 1858,
+      "mesh_count": 2,
+      "material_count": 2,
       "bounds_blender": [
-        -1.226097583770752,
-        -0.8999999165534973,
-        0,
-        1.2124319076538086,
-        0.8999999165534973,
-        3.25
+        -1.3320817947387695,
+        -1.4756437540054321,
+        -0.004717130679637194,
+        1.5274454355239868,
+        1.3547159433364868,
+        3.0221498012542725
       ],
       "animated": false,
       "animation": null,
-      "bytes": 23216,
-      "triangles_exported": 200
+      "bytes": 313776,
+      "triangles_exported": 1858
     },
     {
       "id": "range-ground",
       "file": "models/range-ground.glb",
-      "description": "Reusable 60 x 90 metre driving range ground with alternating mowing strips and target greens.",
-      "triangles_source": 900,
-      "mesh_count": 19,
+      "description": "60 x 90 metre grass module, muted alternating mowing bands and organic target greens.",
+      "triangles_source": 1284,
+      "mesh_count": 15,
+      "material_count": 3,
       "bounds_blender": [
         -30,
         -45,
@@ -194,122 +206,171 @@
       ],
       "animated": false,
       "animation": null,
-      "bytes": 61744,
-      "triangles_exported": 900
+      "bytes": 379232,
+      "triangles_exported": 1284
     },
     {
       "id": "ball-depot",
       "file": "models/ball-depot.glb",
-      "description": "Return station with canopy, receiving chute, storage bin and marked unloading pad.",
-      "triangles_source": 3810,
-      "mesh_count": 16,
+      "description": "Architectural ball return: timber canopy, standing seam roof, stainless receiving chute, industrial storage bin and concrete unloading apron.",
+      "triangles_source": 6042,
+      "mesh_count": 11,
+      "material_count": 11,
       "bounds_blender": [
         -2.200000047683716,
         -3.0500001907348633,
         0,
         2.200000047683716,
-        1.9500000476837158,
-        2.9700000286102295
+        1.9960001707077026,
+        4.419266223907471
       ],
       "animated": false,
       "animation": null,
-      "bytes": 192180,
-      "triangles_exported": 3810
+      "bytes": 619428,
+      "triangles_exported": 6042
     },
     {
       "id": "hitting-bay",
       "file": "models/hitting-bay.glb",
-      "description": "Modular covered driving bay with mat, ball tray and dispenser.",
-      "triangles_source": 1696,
-      "mesh_count": 18,
+      "description": "Modern covered golf bay: exposed timber rafters, dark standing seam roof, steel partitions, textured tee mat, polished dispenser and tray.",
+      "triangles_source": 6816,
+      "mesh_count": 13,
+      "material_count": 13,
       "bounds_blender": [
-        -1.600000023841858,
-        -1.4561554193496704,
+        -1.6100000143051147,
+        -1.4670002460479736,
         0,
-        1.600000023841858,
-        1.4961553812026978,
-        2.9336442947387695
+        1.6100000143051147,
+        1.501673936843872,
+        2.945992946624756
       ],
       "animated": false,
       "animation": null,
-      "bytes": 131820,
-      "triangles_exported": 1696
+      "bytes": 702536,
+      "triangles_exported": 6816
     },
     {
       "id": "goose",
       "file": "models/goose.glb",
-      "description": "Canada goose with black neck, white cheek patches, layered wings and looping waddle.",
-      "triangles_source": 1126,
-      "mesh_count": 15,
+      "description": "Anatomically proportioned Canada goose with curved neck, cheek patches, layered feather detail, webbed feet and walking animation.",
+      "triangles_source": 15058,
+      "mesh_count": 9,
+      "material_count": 8,
       "bounds_blender": [
-        -0.24500000476837158,
-        -0.6051305532455444,
-        0.019999980926513672,
-        0.24500000476837158,
-        0.5400000214576721,
-        1.0549999475479126
+        -0.27666401863098145,
+        -0.5525251030921936,
+        0.02000001072883606,
+        0.2829822301864624,
+        0.5450000166893005,
+        1.0140000581741333
       ],
       "animated": true,
       "animation": "Walk",
-      "bytes": 98512,
-      "triangles_exported": 1126
+      "bytes": 678352,
+      "triangles_exported": 15058
     },
     {
       "id": "fox",
       "file": "models/fox.glb",
-      "description": "Alert red fox with white-tipped tail and looping walk.",
-      "triangles_source": 1480,
-      "mesh_count": 25,
+      "description": "Natural red fox with tapered muzzle, dark stockings, thick brush tail and cream bib, with walking animation.",
+      "triangles_source": 6582,
+      "mesh_count": 18,
+      "material_count": 7,
       "bounds_blender": [
-        -0.1899999976158142,
-        -0.7919999957084656,
-        -0.0004999898374080658,
-        0.1899999976158142,
-        1.0449999570846558,
-        0.9900000095367432
+        -0.15000000596046448,
+        -0.7479999661445618,
+        0.0030000098049640656,
+        0.15000000596046448,
+        1.090456247329712,
+        0.9570000171661377
       ],
       "animated": true,
       "animation": "Walk",
-      "bytes": 125828,
-      "triangles_exported": 1480
+      "bytes": 461540,
+      "triangles_exported": 6582
     },
     {
       "id": "deer",
       "file": "models/deer.glb",
-      "description": "Antlered deer with cream chest and dark hooves and looping walk.",
-      "triangles_source": 1832,
-      "mesh_count": 29,
+      "description": "Natural white tailed buck with long slender legs, tapered head, branching antlers and pale chest, with walking animation.",
+      "triangles_source": 11504,
+      "mesh_count": 18,
+      "material_count": 8,
       "bounds_blender": [
-        -0.3610175549983978,
-        -0.8730000257492065,
-        -0.0004999898374080658,
-        0.3610175549983978,
-        0.6875960230827332,
-        2.1902449131011963
+        -0.30309373140335083,
+        -0.831000030040741,
+        0.0030000396072864532,
+        0.30309373140335083,
+        0.6683206558227539,
+        2.1611602306365967
       ],
       "animated": true,
       "animation": "Walk",
-      "bytes": 154632,
-      "triangles_exported": 1832
+      "bytes": 761032,
+      "triangles_exported": 11504
     },
     {
       "id": "golfer",
       "file": "models/golfer.glb",
-      "description": "Stylized golfer with cap, orange polo, navy trousers and looping practice swing.",
-      "triangles_source": 1428,
-      "mesh_count": 18,
+      "description": "Right handed adult golfer in an athletic address stance, fitted knit polo, articulated legs and arms, wrist release and full shoulder high swing toward local +X.",
+      "triangles_source": 18002,
+      "mesh_count": 44,
+      "material_count": 14,
       "bounds_blender": [
-        -0.26133498549461365,
-        -0.7425000667572021,
-        0.004999998956918716,
-        0.26133498549461365,
-        0.11500000208616257,
-        1.7860000133514404
+        -0.26195892691612244,
+        -0.7420828938484192,
+        0.007185048423707485,
+        0.2553263008594513,
+        0.19499993324279785,
+        1.7264200448989868
       ],
       "animated": true,
       "animation": "PracticeSwing",
-      "bytes": 115260,
-      "triangles_exported": 1428
+      "animation_contract": {
+        "duration_seconds": 3,
+        "impact_seconds": 1.4166666666666667,
+        "impact_frame": 35,
+        "fps": 24,
+        "address_club_head_glb": [
+          0,
+          0.1391304347826087,
+          0.71
+        ],
+        "target_local_axis": "+X",
+        "handedness": "right",
+        "walking_pivots": [
+          "LeftHip",
+          "RightHip",
+          "LeftKnee",
+          "RightKnee",
+          "LeftShoulder",
+          "RightShoulder"
+        ]
+      },
+      "bytes": 869580,
+      "triangles_exported": 18002
+    },
+    {
+      "id": "golf-cart",
+      "file": "models/golf-cart.glb",
+      "source": "code/golf-cart.ts",
+      "description": "Two-seat resort golf cart with rounded bodywork, roof, windscreen, seats, wheel pivots, golf bags and seated driver.",
+      "authored_coordinates": "Y up, +Z forward, metres",
+      "mesh_count": 28,
+      "material_count": 18,
+      "triangles_source": 34346,
+      "triangles_exported": 28730,
+      "bounds_glb": [
+        -0.7200000000596046,
+        0.009999988079071043,
+        -1.261726975440979,
+        0.7200000000596046,
+        1.9149999618530273,
+        1.218500018119812
+      ],
+      "animated": false,
+      "animation": null,
+      "bytes": 593612
     }
   ]
 }

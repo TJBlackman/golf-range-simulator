@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { clone } from "three/addons/utils/SkeletonUtils.js";
-import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
+import { mergeGeometries, mergeVertices } from "three/addons/utils/BufferGeometryUtils.js";
 import {
   CLUBS,
   RANGE_END,
@@ -20,7 +20,12 @@ import {
   VEHICLE_RADIUS,
 } from "./collisions";
 import type { Obstacle } from "./collisions";
-import { GOLFER_TYPES } from "./management";
+import { GOLFER_TYPES, HOPPER_CAPACITIES } from "./management";
+import { createGolfCart, disposeGolfCart } from "./golf-cart";
+import { validateWorldState } from "./world-state";
+import { RangeEnvironment } from "./environment";
+import { HopperBeacon } from "./hopper-beacon";
+import { cartSpeedMultiplier, SAND_TRAP_OUTLINE, SAND_TRAP_ROTATION, SAND_TRAPS } from "./terrain";
 import type {
   GolferState,
   GolferStatus,
@@ -64,6 +69,7 @@ const FIELD = { minX: -50, maxX: 50, minZ: 14, maxZ: TEE.z + 100 * YARD - 6 };
 /** Bay centres along the tee line, in the order bays open. */
 export const BAY_X = [-12, -8, -4, 0, 4, 8, 12, -16, 16, -20, 20, -24];
 const HELPER_HOPPER = 80;
+const MAX_HOPPER = Math.max(...HOPPER_CAPACITIES);
 /** Zigzag sweep lanes that fit the current range, then home to the depot. */
 const helperRoute = (end: number): [number, number][] => {
   const route: [number, number][] = [];
@@ -77,7 +83,20 @@ const helperRoute = (end: number): [number, number][] => {
   return route;
 };
 const HELPER_LANES = helperRoute(RANGE_END).map(([, z]) => z);
-const CAR_COLORS = ["#c9d3d8", "#5a6e8c", "#8c2f2a", "#e8e2d0", "#2f3a4f"];
+const CART_COLORS = ["#eee8d7", "#426754", "#71869c", "#8c4035", "#d0b77b"];
+const GOLFER_SCALE = 1.15;
+const GOLFER_ADDRESS_REACH = 0.71 * GOLFER_SCALE;
+const GOLFER_STANCE_ANGLE = -Math.PI / 2;
+const CART_ARRIVAL_SECONDS = 4.5;
+const BAY_WALK_SECONDS = 3.5;
+const SWING_SPEED = 1.8;
+/** Where a golfer stands to address the ball: trail side of the tee for their handedness. */
+const stanceX = (npc: { origin: Point; leftHanded: boolean }) =>
+  npc.origin.x + (npc.leftHanded ? -GOLFER_ADDRESS_REACH : GOLFER_ADDRESS_REACH);
+const stanceAngle = (npc: { leftHanded: boolean }) =>
+  npc.leftHanded ? -GOLFER_STANCE_ANGLE : GOLFER_STANCE_ANGLE;
+const SWING_IMPACT_SECONDS = 34 / 24;
+const FLIGHT_SPEED = 1.7;
 /** How far down the range each golfer type can send a ball, in yards. */
 const REACH_YARDS: Record<GolferType, number> = {
   family: 170,
@@ -106,10 +125,25 @@ type NPC = {
   moodKey: string;
   type: GolferType;
   status: GolferStatus;
+  leftHanded: boolean;
   polo?: THREE.MeshStandardMaterial;
   walk?: Walk;
+  cart?: VisitorCart;
+  hips: THREE.Object3D[];
+  knees: THREE.Object3D[];
 };
-type Car = { object: THREE.Group; start: number };
+type CartLeg = {
+  path: THREE.Curve<THREE.Vector3>;
+  duration: number;
+  reverse?: boolean;
+};
+type VisitorCart = ReturnType<typeof createGolfCart> & {
+  npc: NPC;
+  park: THREE.Vector3;
+  phase: "arriving" | "parked" | "departing";
+  start: number;
+  legs: CartLeg[];
+};
 type Hazard = {
   id: string;
   z: number;
@@ -144,7 +178,7 @@ type AirShot = {
 type BouncingBall = { position: THREE.Vector3; velocity: THREE.Vector3 };
 export type DriveResult = { collected: number; collision?: Obstacle };
 
-const BALL_VISUAL_SCALE = 1.5;
+const BALL_VISUAL_SCALE = 1;
 
 const modelUrls = import.meta.glob("../assets/models/*.glb", {
   eager: true,
@@ -152,7 +186,7 @@ const modelUrls = import.meta.glob("../assets/models/*.glb", {
   import: "default",
 }) as Record<string, string>;
 const material = (color: string) =>
-  new THREE.MeshStandardMaterial({ color, roughness: 1, flatShading: true });
+  new THREE.MeshStandardMaterial({ color, roughness: 0.85 });
 const vector = (point: Point) => new THREE.Vector3(point.x, point.y, point.z);
 
 export class RangeScene {
@@ -171,19 +205,22 @@ export class RangeScene {
   /** Ball return in the left corner, leaving the tee line free for more bays. */
   readonly depotPosition = new THREE.Vector3(-48, 0, 7);
   readonly depots: THREE.Vector3[] = [];
-  readonly cars: Car[] = [];
+  readonly golfCarts: VisitorCart[] = [];
   /** Current range length. Starts short and grows through the shop. */
   rangeYards = 100;
   rangeEnd = TEE.z + 100 * YARD;
   private helperRoute = helperRoute(this.rangeEnd);
   private ground!: THREE.Group;
+  private bayObjects: THREE.Group[] = [];
+  private secondDepot?: { object: THREE.Group; label: THREE.Sprite };
   private fenceMeshes: THREE.Object3D[] = [];
   private targetGroups: THREE.Group[] = [];
+  private backTrees: THREE.InstancedMesh[] = [];
   private hazards: Hazard[] = [];
   cart: CartSetup = {
     maxSpeed: 9,
     halfWidth: 1.6,
-    capacity: 100,
+    capacity: HOPPER_CAPACITIES[0],
     collector: 0,
     cage: 0,
     bumper: 0,
@@ -191,6 +228,8 @@ export class RangeScene {
   };
   helper?: Helper;
   private tractorModel!: THREE.Group;
+  private hopperBeacon!: HopperBeacon;
+  private tractorTerrainSpeed = 1;
   private wings: THREE.Group[] = [];
   private wingRollers: THREE.Object3D[] = [];
   private cartVisual = { collector: -1, cage: -1, bumper: -1, hopper: -1 };
@@ -224,6 +263,7 @@ export class RangeScene {
   private targetLook = new THREE.Vector3();
   private shakeTime = 0;
   private readonly sun: THREE.DirectionalLight;
+  private readonly environment: RangeEnvironment;
 
   constructor(readonly canvas: HTMLCanvasElement) {
     this.renderer = new THREE.WebGLRenderer({
@@ -235,28 +275,29 @@ export class RangeScene {
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1;
-    this.scene.background = new THREE.Color("#d9e8df");
-    this.scene.fog = new THREE.Fog("#d9e8df", 220, 700);
-    this.scene.add(new THREE.HemisphereLight("#fff6de", "#647354", 2));
-    this.sun = new THREE.DirectionalLight("#fff0cf", 2.5);
-    this.sun.position.set(-55, 85, -25);
+    this.renderer.toneMappingExposure = 0.94;
+    this.scene.background = new THREE.Color("#cedbdd");
+    this.scene.fog = new THREE.Fog("#a9b9ba", 220, 1000);
+    this.scene.add(new THREE.HemisphereLight("#d8e6ef", "#647047", 1.15));
+    this.sun = new THREE.DirectionalLight("#ffead1", 3.1);
+    this.sun.position.set(-95, 68, -28);
     this.sun.target.position.set(0, 0, 65);
     this.sun.castShadow = true;
-    this.sun.shadow.mapSize.set(2048, 2048);
+    this.sun.shadow.mapSize.set(4096, 4096);
     Object.assign(this.sun.shadow.camera, {
-      left: -90,
-      right: 90,
-      top: 215,
-      bottom: -90,
+      left: -75,
+      right: 75,
+      top: 85,
+      bottom: -65,
       near: 0.5,
       far: 350,
     });
-    this.sun.shadow.bias = -0.00025;
-    this.sun.shadow.normalBias = 0.04;
+    this.sun.shadow.bias = -0.00012;
+    this.sun.shadow.normalBias = 0.025;
     this.scene.add(this.sun, this.sun.target);
-    this.camera.position.set(-38, 8.8, 8);
+    this.camera.position.set(-38, 4.4, 8);
     this.camera.lookAt(this.cameraTarget);
+    this.environment = new RangeEnvironment(this.scene, this.renderer);
     this.buildLandscape();
     this.scene.add(this.tractor);
     this.resize();
@@ -278,6 +319,9 @@ export class RangeScene {
       "goose",
       "fox",
       "deer",
+      "distance-marker-50",
+      "distance-marker-100",
+      "distance-marker-150",
     ];
     await Promise.all(
       ids.map(async (id) => {
@@ -292,8 +336,8 @@ export class RangeScene {
               : [object.material];
             for (const mat of materials)
               if (mat instanceof THREE.MeshStandardMaterial) {
-                mat.roughness = 0.9;
-                mat.metalness = 0;
+                mat.envMapIntensity = 0.8;
+                if (/leaves/.test(mat.name)) this.environment.foliage(mat);
               }
           }
         });
@@ -307,6 +351,7 @@ export class RangeScene {
     this.buildObstacles();
     this.buildWildlife();
     this.buildBalls();
+    await this.environment.ready();
     await this.renderer.compileAsync(this.scene, this.camera);
   }
 
@@ -319,60 +364,7 @@ export class RangeScene {
   }
 
   private buildLandscape() {
-    const floor = new THREE.Mesh(
-      new THREE.CircleGeometry(1000, 64),
-      material("#889d69"),
-    );
-    floor.rotation.x = -Math.PI / 2;
-    floor.position.y = -0.3;
-    floor.receiveShadow = true;
-    this.scene.add(floor);
-    const sky = new THREE.Mesh(
-      new THREE.SphereGeometry(1100, 24, 16),
-      new THREE.ShaderMaterial({
-        side: THREE.BackSide,
-        depthWrite: false,
-        uniforms: {
-          topColor: { value: new THREE.Color("#8ab6c1") },
-          bottomColor: { value: new THREE.Color("#f4efdb") },
-        },
-        vertexShader:
-          "varying vec3 vPosition; void main(){ vPosition=position; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }",
-        fragmentShader:
-          "uniform vec3 topColor; uniform vec3 bottomColor; varying vec3 vPosition; void main(){ float h=normalize(vPosition).y; gl_FragColor=vec4(mix(bottomColor,topColor,smoothstep(-0.02,0.7,h)),1.0); }",
-      }),
-    );
-    this.scene.add(sky);
-    const hillColors = ["#90a989", "#a2b29a", "#aabead"];
-    for (let i = 0; i < 23; i++) {
-      const hill = new THREE.Mesh(
-        new THREE.IcosahedronGeometry(1, 1),
-        material(hillColors[i % 3]),
-      );
-      hill.position.set(-570 + i * 55, -6, 430 + Math.sin(i * 2.4) * 60);
-      hill.scale.set(70 + (i % 4) * 18, 30 + (i % 5) * 10, 75);
-      this.scene.add(hill);
-    }
-    const cloudMat = new THREE.MeshBasicMaterial({
-      color: "#fff9ea",
-      transparent: true,
-      opacity: 0.6,
-      fog: false,
-    });
-    for (let i = 0; i < 9; i++) {
-      const cloud = new THREE.Group();
-      for (let j = 0; j < 4; j++) {
-        const puff = new THREE.Mesh(
-          new THREE.IcosahedronGeometry(1, 2),
-          cloudMat,
-        );
-        puff.scale.set(13, 4 + (j % 2) * 2, 6);
-        puff.position.set(j * 11, (j % 2) * 2, 0);
-        cloud.add(puff);
-      }
-      cloud.position.set(-320 + i * 88, 85 + (i % 3) * 19, 310 + (i % 2) * 140);
-      this.scene.add(cloud);
-    }
+    this.environment.buildLandscape();
   }
 
   private buildRange() {
@@ -384,69 +376,72 @@ export class RangeScene {
         object instanceof THREE.Mesh &&
         (object.name === "Ground" || object.name.startsWith("MowingStrip"))
       ) {
-        object.material = material(
+        object.material = this.environment.surface("grass",
           object.name.startsWith("MowingStrip") &&
             parseInt(object.name.split(".")[1] || "0") % 2 === 0
-            ? "#7fa56c"
-            : "#6d945d",
+            ? "#c9d0b5"
+            : "#a7b396", 3.5,
         );
         object.castShadow = false;
       }
     });
     for (const target of TARGETS) {
       const group = new THREE.Group();
-      const disk = new THREE.Mesh(
-        new THREE.CylinderGeometry(12 * YARD, 12 * YARD, 0.028, 64),
-        material("#6b915f"),
-      );
-      disk.position.set(target.x, 0.032, target.z);
-      disk.receiveShadow = true;
-      group.add(disk);
-      for (const [radius, color] of [
-        [5, "#91aa75"],
-        [2, "#b3c491"],
-      ] as const) {
-        const inner = new THREE.Mesh(
-          new THREE.CircleGeometry(radius * YARD, 48),
-          material(color),
-        );
-        inner.rotation.x = -Math.PI / 2;
-        inner.position.set(target.x, 0.053 + (5 - radius) * 0.001, target.z);
-        inner.receiveShadow = true;
-        group.add(inner);
+      const greenShape = new THREE.Shape();
+      for (let i = 0; i <= 80; i++) {
+        const angle = i / 80 * Math.PI * 2;
+        const radius = 10.8 * YARD * (1 + Math.sin(angle * 3 + target.x) * 0.12);
+        const x = Math.cos(angle) * radius;
+        const y = Math.sin(angle) * radius * 0.78;
+        if (i === 0) greenShape.moveTo(x, y);
+        else greenShape.lineTo(x, y);
       }
-      for (const radius of [2, 5, 12]) {
-        const ring = new THREE.Mesh(
-          new THREE.RingGeometry(
-            radius * YARD - 0.045,
-            radius * YARD + 0.045,
-            64,
-          ),
-          new THREE.MeshBasicMaterial({
-            color: "#e9ead3",
-            transparent: true,
-            opacity: 0.52,
-            side: THREE.DoubleSide,
-          }),
-        );
-        ring.rotation.x = -Math.PI / 2;
-        ring.position.set(target.x, 0.065, target.z);
-        group.add(ring);
+      const fringe = new THREE.Mesh(new THREE.ShapeGeometry(greenShape, 64), this.environment.surface("grass", "#c4cba7", 2.5));
+      fringe.rotation.x = -Math.PI / 2;
+      fringe.position.set(target.x, 0.042, target.z);
+      fringe.receiveShadow = true;
+      group.add(fringe);
+      const green = new THREE.Mesh(new THREE.ShapeGeometry(greenShape, 64), this.environment.surface("grass", "#d0d5aa", 1.8));
+      green.rotation.x = -Math.PI / 2;
+      green.scale.setScalar(0.87);
+      green.position.set(target.x, 0.049, target.z);
+      green.receiveShadow = true;
+      group.add(green);
+      const bunkerShape = new THREE.Shape();
+      for (const [i, { x, y }] of SAND_TRAP_OUTLINE.entries()) {
+        if (i === 0) bunkerShape.moveTo(x, y);
+        else bunkerShape.lineTo(x, y);
       }
-      const flag = this.asset("target-flag", target.x, target.z, 1.7);
+      bunkerShape.closePath();
+      const trap = SAND_TRAPS.find(trap => trap.targetZ === target.z)!;
+      const bunker = new THREE.Mesh(new THREE.ShapeGeometry(bunkerShape, 64), this.environment.surface("sand", "#d4c9af", 2));
+      bunker.rotation.x = -Math.PI / 2;
+      bunker.rotation.z = SAND_TRAP_ROTATION;
+      bunker.position.set(trap.x, 0.04, trap.z);
+      bunker.receiveShadow = true;
+      group.add(bunker);
+      const flag = this.asset("target-flag", target.x, target.z, 1.2);
       this.scene.remove(flag);
       flag.rotation.y = -0.4;
       const flagMesh = flag.getObjectByName("Flag");
       if (flagMesh instanceof THREE.Mesh)
-        flagMesh.material = material(target.color);
+        flagMesh.material = this.environment.flagMaterial(target.color);
       group.add(flag);
       group.visible = target.z < this.rangeEnd - 18;
       this.scene.add(group);
       this.targetGroups.push(group);
+      const yards = Math.round((target.z - TEE.z) / YARD);
+      const markerId = `distance-marker-${yards}`;
+      if (this.assets.has(markerId)) {
+        const sign = this.asset(markerId, target.x + 13.5, target.z - 2.5, 1.05);
+        this.scene.remove(sign);
+        sign.rotation.y = Math.PI;
+        group.add(sign);
+      }
     }
     const path = new THREE.Mesh(
-      new THREE.PlaneGeometry(116, 12),
-      material("#d3c9b0"),
+      new THREE.PlaneGeometry(164, 12),
+      this.environment.surface("gravel", "#d1c8b6", 3),
     );
     path.rotation.x = -Math.PI / 2;
     path.position.set(0, 0.013, -5);
@@ -491,6 +486,7 @@ export class RangeScene {
     this.ground.position.z = end / 2;
     this.ground.scale.z = (end + 1) / 90;
     this.buildFences();
+    this.buildBackTrees();
     const back = this.obstacles.find((o) => o.id === "back-fence");
     if (back && back.kind === "box") {
       back.minZ = end - 1;
@@ -516,7 +512,8 @@ export class RangeScene {
   }
 
   private buildBuildings() {
-    for (let i = 0; i < 7; i++) this.addBay(i, true);
+    // Every bay opens empty. The sim books the opening lineup, and each golfer drives in and walks to the mat.
+    for (let i = 0; i < 7; i++) this.addBay(i);
     this.depots.push(this.depotPosition.clone());
     this.asset("ball-depot", this.depotPosition.x, this.depotPosition.z, 1.5);
     this.depotLabel = this.label("BALL RETURN", "#e0b878", "wide");
@@ -528,6 +525,7 @@ export class RangeScene {
     this.scene.add(this.depotLabel);
     const tractorModel = clone(this.assets.get("tractor-picker")!.scene);
     this.tractorModel = tractorModel as THREE.Group;
+    this.hopperBeacon = new HopperBeacon(tractorModel);
     this.tractor.add(tractorModel);
     this.tractor.position.set(-42, 0.03, 20);
     for (const name of [
@@ -546,22 +544,21 @@ export class RangeScene {
     this.collectorRoller = tractorModel.getObjectByName("CollectorRoller");
   }
 
-  private addBay(index: number, occupied: boolean) {
+  private addBay(index: number) {
     const x = BAY_X[index];
     const bay = this.asset("hitting-bay", x, 4);
+    this.bayObjects.push(bay);
     const originNode = bay.getObjectByName("BallLaunchAnchor");
     bay.updateMatrixWorld(true);
     const origin = originNode
       ? originNode.getWorldPosition(new THREE.Vector3())
       : new THREE.Vector3(x + TEE.x, TEE.y, TEE.z);
     origin.y = TEE.y;
-    // The golfer model faces +Z and swings across its own X axis, with the
-    // follow-through ending on its -X side. Turn it a quarter turn so the
-    // follow-through points down the range (+Z), then stand it where the
-    // club head at address rests on the tee.
-    const object = this.asset("golfer", origin.x - 0.82, origin.z + 0.04, 1.15);
+    // Local +X is the lead (left) shoulder. Face across the tee so that
+    // shoulder and the right-handed follow-through point down range (+Z).
+    const object = this.asset("golfer", origin.x + GOLFER_ADDRESS_REACH, origin.z, GOLFER_SCALE);
     object.position.y = 0.18;
-    object.rotation.y = Math.PI / 2;
+    object.rotation.y = GOLFER_STANCE_ANGLE;
     // Give each golfer its own shirt material so types can be coloured.
     let polo: THREE.MeshStandardMaterial | undefined;
     object.traverse((node) => {
@@ -583,9 +580,9 @@ export class RangeScene {
     const mood = this.label("HAPPY", "#a7be79", "mood");
     mood.position.set(x, 3.8, 4);
     this.scene.add(mood);
-    object.visible = occupied;
-    mood.visible = occupied;
-    this.golfers.push({
+    object.visible = false;
+    mood.visible = false;
+    const npc: NPC = {
       object,
       mixer,
       swing,
@@ -593,15 +590,32 @@ export class RangeScene {
       mood,
       moodKey: "",
       type: "casual",
-      status: occupied ? "playing" : "empty",
+      status: "empty",
+      leftHanded: false,
       polo,
-    });
+      hips: ["LeftHip", "RightHip"].map(name => object.getObjectByName(name)).filter((o): o is THREE.Object3D => !!o),
+      knees: ["LeftKnee", "RightKnee"].map(name => object.getObjectByName(name)).filter((o): o is THREE.Object3D => !!o),
+    };
+    this.golfers.push(npc);
   }
 
   /** Open bays up to `count`. New bays start empty until the sim fills them. */
   setBays(count: number) {
+    while (this.golfers.length > count) {
+      const npc = this.golfers.pop()!;
+      this.scene.remove(npc.object, npc.mood, this.bayObjects.pop()!);
+      (npc.mood.material as THREE.SpriteMaterial).map?.dispose();
+      npc.mood.material.dispose();
+      npc.polo?.dispose();
+      if (npc.cart) {
+        this.scene.remove(npc.cart.object);
+        disposeGolfCart(npc.cart);
+        const index = this.golfCarts.indexOf(npc.cart);
+        if (index >= 0) this.golfCarts.splice(index, 1);
+      }
+    }
     while (this.golfers.length < Math.min(count, BAY_X.length))
-      this.addBay(this.golfers.length, false);
+      this.addBay(this.golfers.length);
   }
 
   private buildObstacles() {
@@ -661,6 +675,17 @@ export class RangeScene {
         z: t.z,
         radius: 0.12,
       });
+      if (this.assets.has(`distance-marker-${t.yards}`)) {
+        this.obstacles.push({
+          id: "marker-" + i,
+          name: "Yardage sign",
+          kind: "box",
+          minX: t.x + 12.75,
+          maxX: t.x + 14.25,
+          minZ: t.z - 2.8,
+          maxZ: t.z - 2.2,
+        });
+      }
     }
     // Spread this game's hazards over the full 300 yards so every range
     // tier reveals a couple more: one log, four boulders, four trees.
@@ -683,8 +708,8 @@ export class RangeScene {
     if (logSpot) {
       const [logX, logZ] = logSpot;
       const log = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.5, 0.58, 6, 10),
-        material("#876343"),
+        new THREE.CylinderGeometry(0.5, 0.58, 6, 32),
+        this.environment.surface("bark", "#c6b594", 2),
       );
       log.rotation.z = Math.PI / 2;
       log.position.set(logX, 0.55, logZ);
@@ -692,7 +717,7 @@ export class RangeScene {
       log.receiveShadow = true;
       this.scene.add(log);
       const end = new THREE.Mesh(
-        new THREE.CircleGeometry(0.48, 10),
+        new THREE.CircleGeometry(0.48, 32),
         material("#b99968"),
       );
       end.rotation.y = Math.PI / 2;
@@ -717,10 +742,20 @@ export class RangeScene {
     const rockScales = [1.6, 2.1, 1.8, 2.3];
     rest.slice(0, 4).forEach(([x, z], i) => {
       const scale = rockScales[i];
-      const rock = new THREE.Mesh(
-        new THREE.IcosahedronGeometry(1, 1),
-        material(i % 2 ? "#939886" : "#a7a99a"),
-      );
+      const rockGeometry = new THREE.IcosahedronGeometry(1, 4);
+      const points = rockGeometry.getAttribute("position");
+      for (let n = 0; n < points.count; n++) {
+        const px = points.getX(n), py = points.getY(n), pz = points.getZ(n);
+        const irregularity = 1 + Math.sin(px * 9 + pz * 5) * 0.075 + Math.sin(py * 13 - px * 5) * 0.05;
+        points.setXYZ(n, px * irregularity, py * irregularity, pz * irregularity);
+      }
+      // Weld the icosphere faces before recomputing normals so mineral
+      // detail follows a rounded weathered surface instead of flat facets.
+      rockGeometry.deleteAttribute("normal");
+      const smoothRock = mergeVertices(rockGeometry);
+      smoothRock.computeVertexNormals();
+      rockGeometry.dispose();
+      const rock = new THREE.Mesh(smoothRock, this.environment.surface("rock", i % 2 ? "#b9b8a5" : "#d0caba", 1.8));
       rock.position.set(x, scale * 0.55, z);
       rock.scale.set(scale, scale * 0.75, scale * 0.85);
       rock.rotation.y = i * 0.7;
@@ -817,22 +852,30 @@ export class RangeScene {
       );
       (i % 3 ? pine : broad).push(matrix);
     }
-    for (let i = 0; i < 55; i++) {
-      const scale = 2.8 + random(i + 300) * 2;
-      pine.push(
-        new THREE.Matrix4().compose(
-          new THREE.Vector3(
-            -85 + i * 3.2,
-            0,
-            RANGE_END + 12 + random(i + 400) * 25,
-          ),
-          new THREE.Quaternion(),
-          new THREE.Vector3(scale, scale, scale),
-        ),
-      );
-    }
     this.instanceAsset("tree-pine", pine);
     this.instanceAsset("tree-broadleaf", broad);
+    this.buildBackTrees();
+  }
+
+  /** Move the wooded backdrop beyond the new fence when the range grows. */
+  private buildBackTrees() {
+    for (const tree of this.backTrees) {
+      this.scene.remove(tree);
+      tree.geometry.dispose();
+    }
+    this.backTrees = [];
+    const pine: THREE.Matrix4[] = [], broad: THREE.Matrix4[] = [];
+    const random = (i: number) => ((Math.sin(i * 127.1 + 311.7) * 43758.5453) % 1 + 1) % 1;
+    for (let i = 0; i < 104; i++) {
+      const scale = 2.4 + random(i + 300) * 1.9;
+      const matrix = new THREE.Matrix4().compose(
+        new THREE.Vector3(-79 + (i % 52) * 3.05 + random(i + 350), -0.02, this.rangeEnd + 13 + Math.floor(i / 52) * 14 + random(i + 400) * 7),
+        new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), random(i + 500) * Math.PI * 2),
+        new THREE.Vector3(scale, scale, scale),
+      );
+      (i % 4 ? pine : broad).push(matrix);
+    }
+    this.backTrees.push(...this.instanceAsset("tree-pine", pine), ...this.instanceAsset("tree-broadleaf", broad));
   }
 
   private instanceAsset(id: string, placements: THREE.Matrix4[]) {
@@ -993,28 +1036,28 @@ export class RangeScene {
 
   private buildBalls() {
     let geometry = new THREE.SphereGeometry(0.065 * BALL_VISUAL_SCALE, 8, 6);
+    let ballMaterial: THREE.Material = new THREE.MeshStandardMaterial({ color: "#fffdf3", roughness: 0.38 });
     const source = this.assets.get("golf-ball")!.scene;
     source.updateMatrixWorld(true);
     source.traverse((o) => {
-      if (o instanceof THREE.Mesh)
+      if (o instanceof THREE.Mesh) {
         geometry = o.geometry
           .clone()
           .applyMatrix4(o.matrixWorld)
+          .center()
           .scale(
-            3 * BALL_VISUAL_SCALE,
-            3 * BALL_VISUAL_SCALE,
-            3 * BALL_VISUAL_SCALE,
+            2.2 * BALL_VISUAL_SCALE,
+            2.2 * BALL_VISUAL_SCALE,
+            2.2 * BALL_VISUAL_SCALE,
           );
-    });
-    const ballMaterial = new THREE.MeshStandardMaterial({
-      color: "#fffdf3",
-      roughness: 0.5,
+        if (!Array.isArray(o.material)) ballMaterial = o.material;
+      }
     });
     this.fieldBalls = new THREE.InstancedMesh(geometry, ballMaterial, 1500);
     this.fieldBalls.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.fieldBalls.frustumCulled = false;
     this.scene.add(this.fieldBalls);
-    this.hopperBalls = new THREE.InstancedMesh(geometry, ballMaterial, 220);
+    this.hopperBalls = new THREE.InstancedMesh(geometry, ballMaterial, MAX_HOPPER);
     this.hopperBalls.count = 0;
     this.tractor.add(this.hopperBalls);
     this.flyingBalls = new THREE.InstancedMesh(geometry, ballMaterial, 400);
@@ -1054,12 +1097,12 @@ export class RangeScene {
     canvas.width = kind === "wide" ? 512 : kind === "mood" ? 384 : 256;
     canvas.height = 128;
     const ctx = canvas.getContext("2d")!;
-    ctx.fillStyle = "#203d30";
+    ctx.fillStyle = "#18241ee8";
     ctx.beginPath();
-    ctx.roundRect(4, 4, canvas.width - 8, 110, 28);
+    ctx.roundRect(4, 4, canvas.width - 8, 110, 10);
     ctx.fill();
     ctx.strokeStyle = color;
-    ctx.lineWidth = 3;
+    ctx.lineWidth = 2;
     ctx.stroke();
     ctx.fillStyle = "#f5f3df";
     ctx.textAlign = "center";
@@ -1088,7 +1131,7 @@ export class RangeScene {
         depthTest: true,
       }),
     );
-    if (kind === "mood") sprite.scale.set(2.55, 0.85, 1);
+    if (kind === "mood") sprite.scale.set(1.8, 0.6, 1);
     else sprite.scale.set(kind === "wide" ? 6.5 : 3.6, 1.8, 1);
     return sprite;
   }
@@ -1134,8 +1177,10 @@ export class RangeScene {
     }
     x = clamp(x, -46, 46);
     z = clamp(z, 25, this.rangeEnd - 10);
-    const shape: Shape =
+    let shape: Shape =
       Math.random() < 0.34 ? "draw" : Math.random() < 0.5 ? "fade" : "straight";
+    // A left-hander's draw and fade curve the opposite way.
+    if (npc.leftHanded && shape !== "straight") shape = shape === "draw" ? "fade" : "draw";
     if (order.lost) {
       // A slice that clears the boundary fence and is gone for good.
       x = (order.golfer % 2 ? -1 : 1) * (61 + Math.random() * 5);
@@ -1161,7 +1206,7 @@ export class RangeScene {
       { club, power: (low + high) / 2, aim, wind, shape },
       npc.origin,
     );
-    npc.swing.reset().setEffectiveTimeScale(1.8).play();
+    npc.swing.reset().setEffectiveTimeScale(SWING_SPEED).play();
     npc.swing.paused = false;
     const trail = new THREE.Line(
       new THREE.BufferGeometry().setFromPoints(
@@ -1175,11 +1220,11 @@ export class RangeScene {
     );
     trail.geometry.setDrawRange(0, 0);
     this.scene.add(trail);
-    // Hold the ball on the tee until the swing reaches impact (about half the
-    // clip at 1.8x speed, measured in flight time that runs at 1.7x).
+    // Keep the ball on the tee through the backswing, releasing exactly at
+    // the exported clip's impact pose rather than halfway through the clip.
     this.airShots.push({
       shot,
-      time: -0.9,
+      time: -(SWING_IMPACT_SECONDS / SWING_SPEED) * FLIGHT_SPEED,
       point: { ...npc.origin },
       trail,
       lost: order.lost,
@@ -1191,7 +1236,7 @@ export class RangeScene {
     for (let i = this.airShots.length - 1; i >= 0; i--) {
       const flight = this.airShots[i],
         previous = flight.point;
-      flight.time += dt * 1.7;
+      flight.time += dt * FLIGHT_SPEED;
       flight.point = sampleShot(flight.shot, Math.max(0, flight.time));
       const hit =
         flight.time > 0 &&
@@ -1291,12 +1336,18 @@ export class RangeScene {
       if (state.type !== npc.type) {
         npc.type = state.type;
         npc.polo?.color.set(GOLFER_TYPES[state.type].color);
+        const driverPolo = npc.cart?.driver.getObjectByName("DriverPolo") as THREE.Mesh | undefined;
+        if (driverPolo?.material instanceof THREE.MeshStandardMaterial)
+          driverPolo.material.color.set(GOLFER_TYPES[state.type].color);
       }
       if (state.status !== npc.status) this.transitionGolfer(npc, state);
+      if (state.leftHanded !== npc.leftHanded) this.setHandedness(npc, state.leftHanded);
       if (state.status === "empty") continue;
       const key =
         state.status === "leaving"
           ? "leaving"
+          : npc.cart?.phase === "arriving" || (npc.walk && !npc.walk.hide)
+            ? "arriving"
           : state.waiting
             ? state.patience < 35
               ? "upset"
@@ -1308,7 +1359,9 @@ export class RangeScene {
       if (npc.moodKey === moodKey) continue;
       npc.moodKey = moodKey;
       const text =
-        key === "waiting"
+        key === "arriving"
+          ? "ARRIVING"
+          : key === "waiting"
           ? "NO BALLS"
           : key === "upset"
             ? "UPSET"
@@ -1339,41 +1392,44 @@ export class RangeScene {
     }
   }
 
+  /** Mirror the right-handed rig so the swing plays the other way, and move to the far side of the tee. */
+  private setHandedness(npc: NPC, leftHanded: boolean) {
+    npc.leftHanded = leftHanded;
+    npc.object.scale.x = (leftHanded ? -1 : 1) * GOLFER_SCALE;
+    if (npc.status === "playing" && !npc.walk && npc.object.visible) {
+      npc.object.position.x = stanceX(npc);
+      npc.object.rotation.y = stanceAngle(npc);
+    }
+  }
+
   private transitionGolfer(npc: NPC, state: GolferState) {
-    const stance = new THREE.Vector3(
-      npc.origin.x - 0.82,
-      0.18,
-      npc.origin.z + 0.04,
-    );
-    const outside = new THREE.Vector3(npc.origin.x - 0.82, 0.18, -7);
     npc.status = state.status;
     if (state.status === "playing") {
-      npc.object.visible = true;
-      npc.mood.visible = true;
-      npc.object.position.copy(outside);
+      npc.object.visible = false;
+      npc.mood.visible = false;
       npc.swing.reset().play();
       npc.swing.paused = true;
-      npc.walk = {
-        from: outside.clone(),
-        to: stance,
-        start: this.elapsed,
-        duration: outside.distanceTo(stance) / 3,
-        hide: false,
-      };
+      npc.walk = undefined;
+      npc.cart = this.createVisitorCart(npc, state.id, true);
     } else if (state.status === "leaving") {
       const from = npc.object.position.clone();
+      npc.swing.reset().play();
+      npc.swing.paused = true;
+      npc.mixer.update(0);
+      npc.cart ??= this.createVisitorCart(npc, state.id, false);
       npc.walk = {
         from,
-        to: outside,
+        to: this.boardingPoint(npc.cart),
         start: this.elapsed,
-        duration: from.distanceTo(outside) / 3,
+        duration: BAY_WALK_SECONDS,
         hide: true,
       };
-      this.spawnCar(npc.origin.x);
     } else {
       npc.object.visible = false;
       npc.mood.visible = false;
       npc.walk = undefined;
+      if (npc.cart?.phase === "parked") this.departGolfCart(npc.cart);
+      npc.cart = undefined;
     }
   }
 
@@ -1387,60 +1443,120 @@ export class RangeScene {
         walk.to.x - walk.from.x,
         walk.to.z - walk.from.z,
       );
+      // Hip and knee pivots give the short boarding walk a real stepping gait.
+      for (const [i, hip] of npc.hips.entries()) {
+        hip.userData.gaitRestX ??= hip.rotation.x;
+        hip.rotation.x = hip.userData.gaitRestX + Math.sin(t * walk.duration * 8 + i * Math.PI) * 0.27;
+      }
+      for (const [i, knee] of npc.knees.entries()) {
+        knee.userData.gaitRestX ??= knee.rotation.x;
+        knee.rotation.x = knee.userData.gaitRestX + Math.max(0, Math.sin(t * walk.duration * 8 + i * Math.PI)) * 0.32;
+      }
+      npc.object.position.y += Math.sin(t * walk.duration * 16) * 0.016;
       if (t < 1) continue;
       npc.walk = undefined;
+      for (const joint of [...npc.hips, ...npc.knees]) joint.rotation.x = joint.userData.gaitRestX;
+      npc.object.position.copy(walk.to);
       if (walk.hide) {
         npc.object.visible = false;
         npc.mood.visible = false;
-      } else npc.object.rotation.y = Math.PI / 2;
+        if (npc.cart) this.departGolfCart(npc.cart);
+        npc.cart = undefined;
+      } else npc.object.rotation.y = stanceAngle(npc);
     }
   }
 
-  /** A boxy car waits behind the bays, then pulls away with the golfer. */
-  private spawnCar(x: number) {
-    const car = new THREE.Group();
-    const paint = material(CAR_COLORS[this.cars.length % CAR_COLORS.length]);
-    const body = new THREE.Mesh(new THREE.BoxGeometry(3.9, 0.9, 1.7), paint);
-    body.position.y = 0.78;
-    const cabin = new THREE.Mesh(new THREE.BoxGeometry(2, 0.72, 1.5), paint);
-    cabin.position.set(-0.25, 1.58, 0);
-    const glass = new THREE.Mesh(
-      new THREE.BoxGeometry(2.04, 0.4, 1.54),
-      material("#5b6f6a"),
-    );
-    glass.position.set(-0.25, 1.6, 0);
-    car.add(body, cabin, glass);
-    const tyre = material("#2a2a2a");
-    for (const [wx, wz] of [
-      [-1.25, 0.85],
-      [1.25, 0.85],
-      [-1.25, -0.85],
-      [1.25, -0.85],
-    ]) {
-      const wheel = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.34, 0.34, 0.3, 10),
-        tyre,
-      );
-      wheel.rotation.x = Math.PI / 2;
-      wheel.position.set(wx, 0.34, wz);
-      car.add(wheel);
-    }
-    car.traverse((o) => {
-      if (o instanceof THREE.Mesh) o.castShadow = true;
-    });
-    car.position.set(x + 0.4, 0, -9.5);
-    this.scene.add(car);
-    this.cars.push({ object: car, start: this.elapsed });
+  /** Each occupied bay keeps its visitor's resort cart parked behind it. */
+  private createVisitorCart(npc: NPC, index: number, arriving: boolean): VisitorCart {
+    const model = createGolfCart(CART_COLORS[index % CART_COLORS.length], GOLFER_TYPES[npc.type].color);
+    const park = new THREE.Vector3(npc.origin.x + GOLFER_ADDRESS_REACH, 0.02, -4.6);
+    const cart: VisitorCart = {
+      ...model, npc, park, phase: arriving ? "arriving" : "parked",
+      start: this.elapsed, legs: [],
+    };
+    model.object.name = `VisitorGolfCart_${index}_${this.elapsed}`;
+    model.object.userData.golferId = index;
+    model.driver.visible = arriving;
+    if (arriving) {
+      const lane = -8.5;
+      const entry = new THREE.Vector3(-80, 0.02, lane);
+      const turn = new THREE.Vector3(park.x - 8, 0.02, lane);
+      const path = new THREE.CurvePath<THREE.Vector3>();
+      path.add(new THREE.LineCurve3(entry, turn));
+      path.add(new THREE.CubicBezierCurve3(turn,
+        new THREE.Vector3(park.x, 0.02, lane),
+        new THREE.Vector3(park.x, 0.02, park.z - 2), park.clone()));
+      cart.legs.push({ path, duration: CART_ARRIVAL_SECONDS });
+      model.object.position.copy(entry);
+      model.object.rotation.y = Math.PI / 2;
+    } else model.object.position.copy(park);
+    this.scene.add(model.object);
+    this.golfCarts.push(cart);
+    return cart;
   }
 
-  private updateCars(dt: number) {
-    for (let i = this.cars.length - 1; i >= 0; i--) {
-      const car = this.cars[i];
-      if (this.elapsed - car.start < 3.6) continue;
-      car.object.position.x += 9 * dt;
-      if (car.object.position.x > 80) {
-        this.scene.remove(car.object);
-        this.cars.splice(i, 1);
+  private boardingPoint(cart: VisitorCart) {
+    return new THREE.Vector3(cart.park.x - 0.78, 0.18, cart.park.z + 0.3);
+  }
+
+  private departGolfCart(cart: VisitorCart) {
+    if (cart.phase === "departing") return;
+    cart.driver.visible = true;
+    cart.phase = "departing";
+    cart.start = this.elapsed;
+    const lane = -8.5;
+    const merge = new THREE.Vector3(cart.park.x - 6, 0.02, lane);
+    const reverse = new THREE.CubicBezierCurve3(cart.park.clone(),
+      new THREE.Vector3(cart.park.x, 0.02, cart.park.z - 2.8),
+      new THREE.Vector3(cart.park.x - 2.5, 0.02, lane), merge);
+    const exit = new THREE.LineCurve3(merge, new THREE.Vector3(85, 0.02, lane));
+    cart.legs = [
+      { path: reverse, duration: 1.5, reverse: true },
+      { path: exit, duration: exit.getLength() / 10 },
+    ];
+  }
+
+  private updateGolfCarts() {
+    for (let i = this.golfCarts.length - 1; i >= 0; i--) {
+      const cart = this.golfCarts[i];
+      if (cart.phase === "parked") continue;
+      let time = this.elapsed - cart.start;
+      let active: CartLeg | undefined;
+      for (const leg of cart.legs) {
+        if (time < leg.duration) { active = leg; break; }
+        time -= leg.duration;
+      }
+      if (active) {
+        const t = clamp(time / active.duration, 0, 1);
+        const point = active.path.getPointAt(t);
+        const tangent = active.path.getTangentAt(t);
+        const distance = cart.object.position.distanceTo(point);
+        cart.object.position.copy(point);
+        cart.object.rotation.y = Math.atan2(tangent.x, tangent.z) + (active.reverse ? Math.PI : 0);
+        for (const wheel of cart.wheels) wheel.rotation.x += distance / 0.25 * (active.reverse ? -1 : 1);
+        continue;
+      }
+      if (cart.phase === "arriving") {
+        cart.phase = "parked";
+        cart.object.position.copy(cart.park);
+        cart.object.rotation.y = 0;
+        cart.driver.visible = false;
+        const npc = cart.npc;
+        const outside = this.boardingPoint(cart);
+        npc.object.position.copy(outside);
+        npc.object.visible = npc.status === "playing";
+        npc.mood.visible = npc.object.visible;
+        npc.swing.reset().play();
+        npc.swing.paused = true;
+        npc.mixer.update(0);
+        npc.walk = {
+          from: outside, to: new THREE.Vector3(stanceX(npc), 0.18, npc.origin.z),
+          start: cart.start + CART_ARRIVAL_SECONDS, duration: BAY_WALK_SECONDS, hide: false,
+        };
+      } else {
+        this.scene.remove(cart.object);
+        disposeGolfCart(cart);
+        this.golfCarts.splice(i, 1);
       }
     }
   }
@@ -1448,6 +1564,7 @@ export class RangeScene {
   /** Swap cart parts to match the purchased upgrade levels. */
   applyCart(setup: CartSetup) {
     this.cart = setup;
+    this.hopperBeacon.setLoad(this.hopperBalls.count, setup.capacity);
     const visual = this.cartVisual;
     if (visual.collector !== setup.collector) {
       visual.collector = setup.collector;
@@ -1466,10 +1583,19 @@ export class RangeScene {
       this.cage = undefined;
       if (setup.cage > 0) {
         const cage = new THREE.Group();
-        const frame = new THREE.LineSegments(
-          new THREE.EdgesGeometry(new THREE.BoxGeometry(1.7, 0.75, 1.05)),
-          new THREE.LineBasicMaterial({ color: "#1f2a22" }),
-        );
+        const frameParts: THREE.BufferGeometry[] = [];
+        for (const x of [-0.85, 0.85])
+          for (const z of [-0.525, 0.525])
+            frameParts.push(new THREE.BoxGeometry(0.035, 0.75, 0.035).translate(x, 0, z));
+        for (const y of [-0.375, 0.375]) {
+          for (const z of [-0.525, 0.525])
+            frameParts.push(new THREE.BoxGeometry(1.7, 0.035, 0.035).translate(0, y, z));
+          for (const x of [-0.85, 0.85])
+            frameParts.push(new THREE.BoxGeometry(0.035, 0.035, 1.05).translate(x, y, 0));
+        }
+        const frame = new THREE.Mesh(mergeGeometries(frameParts)!, new THREE.MeshStandardMaterial({color: "#38433b", roughness: 0.5, metalness: 0.75}));
+        frameParts.forEach((part) => part.dispose());
+        frame.castShadow = true;
         cage.add(frame);
         for (const dx of [-0.42, 0, 0.42]) {
           const bar = new THREE.Mesh(
@@ -1485,13 +1611,9 @@ export class RangeScene {
         if (setup.cage > 1) {
           const panels = new THREE.Mesh(
             new THREE.BoxGeometry(1.7, 0.75, 1.05),
-            new THREE.MeshBasicMaterial({
-              color: "#1f2a22",
-              transparent: true,
-              opacity: 0.22,
-              side: THREE.DoubleSide,
-            }),
+            this.environment.netMaterial(),
           );
+          (panels.material as THREE.MeshStandardMaterial).map!.repeat.set(3, 2);
           cage.add(panels);
         }
         cage.position.set(0, 1.25 + 0.375, -1.28);
@@ -1507,7 +1629,7 @@ export class RangeScene {
         const bumper = new THREE.Group();
         const big = setup.bumper > 1;
         const bar = new THREE.Mesh(
-          new THREE.BoxGeometry(big ? 2.1 : 1.9, big ? 0.36 : 0.26, 0.3),
+          this.environment.roundedBox(big ? 2.1 : 1.9, big ? 0.36 : 0.26, 0.3, 0.05),
           material("#2b2b2b"),
         );
         bar.position.set(0, 0.62, big ? 1.78 : 1.7);
@@ -1532,18 +1654,25 @@ export class RangeScene {
       this.boards = undefined;
       if (setup.hopper > 0) {
         const boards = new THREE.Group();
-        const height = setup.hopper === 1 ? 0.3 : 0.6;
-        const wood = material("#d9c48a");
+        // Side boards grow with each hopper tier.
+        const height = 0.2 * setup.hopper;
+        const mesh = this.environment.netMaterial();
+        mesh.map!.repeat.set(5, 2);
+        const rim = new THREE.MeshStandardMaterial({color: "#b76832", roughness: 0.42, metalness: 0.35});
         for (const [w, d, px, pz] of [
           [0.06, 1.0, -0.78, -1.28],
           [0.06, 1.0, 0.78, -1.28],
           [1.62, 0.06, 0, -0.78],
           [1.62, 0.06, 0, -1.78],
         ]) {
-          const board = new THREE.Mesh(new THREE.BoxGeometry(w, height, d), wood);
+          const board = new THREE.Mesh(new THREE.BoxGeometry(w, height, d), mesh);
           board.position.set(px, 1.25 + height / 2, pz);
           board.castShadow = true;
           boards.add(board);
+          const rail = new THREE.Mesh(this.environment.roundedBox(w, 0.045, d, 0.01), rim);
+          rail.position.set(px, 1.25 + height, pz);
+          rail.castShadow = true;
+          boards.add(rail);
         }
         this.tractor.add(boards);
         this.boards = boards;
@@ -1582,13 +1711,8 @@ export class RangeScene {
     const nets = new THREE.Group();
     const height = level === 1 ? 7 : 11;
     const end = this.rangeEnd;
-    const mesh = new THREE.MeshBasicMaterial({
-      color: "#24322a",
-      transparent: true,
-      opacity: 0.32,
-      side: THREE.DoubleSide,
-      depthWrite: false,
-    });
+    const mesh = this.environment.netMaterial();
+    mesh.map!.repeat.set(end, height);
     const post = material("#6e6a5c");
     for (const side of [-1, 1]) {
       const panel = new THREE.Mesh(
@@ -1608,7 +1732,9 @@ export class RangeScene {
       }
     }
     if (level > 1) {
-      const back = new THREE.Mesh(new THREE.PlaneGeometry(112, height), mesh);
+      const backMaterial = this.environment.netMaterial();
+      backMaterial.map!.repeat.set(112, height);
+      const back = new THREE.Mesh(new THREE.PlaneGeometry(112, height), backMaterial);
       back.position.set(0, height / 2, end + 0.5);
       nets.add(back);
     }
@@ -1624,18 +1750,19 @@ export class RangeScene {
         : level >= 1
           ? ["fallen-log"]
           : [];
-    for (const hazard of this.hazards)
-      if (ids.includes(hazard.id) && !hazard.cleared) {
-        hazard.cleared = true;
-        for (const object of hazard.objects) this.scene.remove(object);
-      }
+    for (const hazard of this.hazards) {
+      hazard.cleared = ids.includes(hazard.id);
+      for (const object of hazard.objects)
+        if (hazard.cleared) this.scene.remove(object);
+        else this.scene.add(object);
+    }
     this.syncHazards();
   }
 
   addSecondDepot() {
     if (this.depots.length > 1) return;
     const position = new THREE.Vector3(27, 0, Math.min(150, this.rangeEnd - 25));
-    this.asset("ball-depot", position.x, position.z, 1.5);
+    const object = this.asset("ball-depot", position.x, position.z, 1.5);
     this.obstacles.push({
       id: "depot-2",
       name: "Ball depot",
@@ -1648,6 +1775,7 @@ export class RangeScene {
     const label = this.label("BALL RETURN", "#e0b878", "wide");
     label.position.set(position.x, 5.7, position.z);
     this.scene.add(label);
+    this.secondDepot = { object, label };
     this.depots.push(position);
   }
 
@@ -1702,7 +1830,7 @@ export class RangeScene {
     let delta = desired - h.angle;
     delta -= Math.round(delta / (Math.PI * 2)) * Math.PI * 2;
     h.angle += clamp(delta, -dt * 1.6, dt * 1.6);
-    const speed = 7 * Math.max(0.3, 1 - Math.abs(delta) / Math.PI);
+    const speed = 7 * Math.max(0.3, 1 - Math.abs(delta) / Math.PI) * cartSpeedMultiplier(h.object.position, this.rangeEnd);
     h.object.position.x += Math.sin(h.angle) * speed * dt;
     h.object.position.z += Math.cos(h.angle) * speed * dt;
     h.object.rotation.y = h.angle;
@@ -1762,6 +1890,7 @@ export class RangeScene {
     this.tractor.position.set(-42, 0.03, 20);
     this.tractorAngle = 0;
     this.tractorSpeed = 0;
+    this.tractorTerrainSpeed = 1;
     this.latchedCollisions.clear();
   }
 
@@ -1777,7 +1906,8 @@ export class RangeScene {
   }
 
   setHopper(count: number) {
-    this.hopperBalls.count = Math.min(count, 220);
+    this.hopperBeacon.setLoad(count, this.cart.capacity);
+    this.hopperBalls.count = Math.min(count, MAX_HOPPER);
     for (let i = 0; i < this.hopperBalls.count; i++) {
       this.ballDummy.position.set(
         -0.55 + (i % 8) * 0.15,
@@ -1800,9 +1930,11 @@ export class RangeScene {
   ): DriveResult {
     const max = forward < 0 ? this.cart.maxSpeed * 0.45 : this.cart.maxSpeed,
       desired = forward * max;
-    this.tractorSpeed +=
-      (desired - this.tractorSpeed) *
-      Math.min(1, dt * (brake ? 9 : 2.2 * (this.cart.maxSpeed / 9)));
+    // Preserve the engine response while terrain scales actual speed exactly once.
+    const engineSpeed = this.tractorSpeed / this.tractorTerrainSpeed;
+    this.tractorTerrainSpeed = cartSpeedMultiplier(this.tractor.position, this.rangeEnd);
+    this.tractorSpeed = (engineSpeed + (desired - engineSpeed) *
+      Math.min(1, dt * (brake ? 9 : 2.2 * (this.cart.maxSpeed / 9)))) * this.tractorTerrainSpeed;
     if (brake) this.tractorSpeed *= Math.max(0, 1 - dt * 7);
     this.tractorAngle -= steer * this.tractorSpeed * 0.12 * dt;
     this.tractor.rotation.y = this.tractorAngle;
@@ -1925,10 +2057,16 @@ export class RangeScene {
 
   update(dt: number) {
     this.elapsed += dt;
+    this.hopperBeacon.update(dt);
+    this.environment.update(this.elapsed);
+    // Keep the shadow texels concentrated around the player instead of
+    // stretching one map over the full 300-yard range.
+    this.sun.target.position.set(this.tractor.position.x, 0, this.tractor.position.z + 20);
+    this.sun.position.set(this.tractor.position.x - 62, 68, this.tractor.position.z - 53);
     for (const golfer of this.golfers) golfer.mixer.update(dt);
     for (const animal of this.animals) this.wander(animal, dt);
     this.updateWalks();
-    this.updateCars(dt);
+    this.updateGolfCarts();
     if (this.cameraMode === "overview") {
       const end = this.rangeEnd;
       this.targetCamera.set(end * 0.36, end * 0.6 + 20, -end * 0.2);
@@ -1942,7 +2080,7 @@ export class RangeScene {
       }
       const a = this.tractorAngle + this.lookYaw,
         back = 12 * this.lookZoom,
-        height = (8.8 + this.lookPitch * 9) * this.lookZoom;
+        height = (4.4 + this.lookPitch * 6.5) * this.lookZoom;
       this.targetCamera.set(
         this.tractor.position.x + Math.cos(a) * 4 - Math.sin(a) * back,
         height,
@@ -1971,6 +2109,189 @@ export class RangeScene {
     this.renderer.render(this.scene, this.camera);
   }
 
+  /** JSON-safe simulation and visual state for named browser saves. */
+  exportState() {
+    const transform = (o: THREE.Object3D) => ({
+      position: o.position.toArray(), rotation: [o.rotation.x, o.rotation.y, o.rotation.z], scale: o.scale.toArray(),
+    });
+    return {
+      version: 1 as const, elapsed: this.elapsed, rangeYards: this.rangeYards, bayCount: this.golfers.length,
+      tractorPosition: this.tractor.position.toArray(), tractorAngle: this.tractorAngle, tractorSpeed: this.tractorSpeed,
+      wheelRotations: this.tractorWheels.map(w => w.rotation.x),
+      steeringRotations: this.tractorSteering.map(w => w.rotation.y),
+      collectorRotation: this.collectorRoller?.rotation.x ?? 0,
+      cameraMode: this.cameraMode, cameraPosition: this.camera.position.toArray(), cameraTarget: this.cameraTarget.toArray(),
+      lookYaw: this.lookYaw, lookPitch: this.lookPitch, lookZoom: this.lookZoom,
+      looking: this.looking, lookHoldUntil: this.lookHoldUntil,
+      latchedCollisions: [...this.latchedCollisions],
+      balls: this.balls.map(b => ({
+        position: b.position.toArray(), active: b.active,
+        pickableAt: b.pickableAt === Infinity ? null : b.pickableAt,
+      })),
+      airShots: this.airShots.map(a => ({
+        shot: structuredClone(a.shot), time: a.time, point: { ...a.point }, lost: a.lost,
+      })),
+      bouncingBalls: this.bouncingBalls.map(b => ({ position: b.position.toArray(), velocity: b.velocity.toArray() })),
+      golfers: this.golfers.map(g => ({
+        position: g.object.position.toArray(), rotation: g.object.rotation.y, visible: g.object.visible,
+        type: g.type, status: g.status,
+        swingTime: g.swing.time, swingSpeed: g.swing.getEffectiveTimeScale(), swingPaused: g.swing.paused, swingEnabled: g.swing.enabled,
+        walk: g.walk ? { ...g.walk, from: g.walk.from.toArray(), to: g.walk.to.toArray() } : null,
+      })),
+      golfCarts: this.golfCarts.map(c => ({
+        golfer: c.object.userData.golferId as number, park: c.park.toArray(), phase: c.phase, start: c.start,
+        position: c.object.position.toArray(), rotation: c.object.rotation.y, driverVisible: c.driver.visible,
+        wheels: c.wheels.map(w => w.rotation.x),
+        polo: ((c.driver.getObjectByName("DriverPolo") as THREE.Mesh).material as THREE.MeshStandardMaterial).color.getHexString(),
+      })),
+      animals: this.animals.map(a => ({
+        id: a.id, position: a.object.position.toArray(), home: a.home.toArray(), target: a.target.toArray(),
+        heading: a.heading, mode: a.mode, until: a.until, phase: a.phase, walkTime: a.walk.time, walkSpeed: a.walk.getEffectiveTimeScale(),
+      })),
+      hazards: this.hazards.map(h => ({
+        id: h.id, z: h.z, cleared: h.cleared, obstacle: { ...h.obstacle }, objects: h.objects.map(transform),
+      })),
+      depots: this.depots.map(p => p.toArray()),
+      helper: this.helper ? {
+        position: this.helper.object.position.toArray(), angle: this.helper.angle, hopper: this.helper.hopper,
+        index: this.helper.index, pauseUntil: this.helper.pauseUntil, roller: this.helper.roller?.rotation.x ?? 0,
+      } : null,
+    };
+  }
+
+  /** Validate completely, then rebuild scene-only objects around saved economy. */
+  restoreState(value: unknown) {
+    validateWorldState(value);
+    const saved = value as ReturnType<RangeScene["exportState"]>;
+    if (saved.animals.length !== this.animals.length ||
+        saved.animals.some((a,i) => a.id !== this.animals[i].id) ||
+        saved.hazards.length !== this.hazards.length ||
+        saved.hazards.some(h => !this.hazards.some(current => current.id === h.id && current.objects.length === h.objects.length)))
+      throw new Error("This save uses an incompatible scene layout.");
+    if (saved.helper && saved.helper.index >= helperRoute(TEE.z + saved.rangeYards * YARD).length)
+      throw new Error("This save contains an invalid helper route.");
+    const cloneState = structuredClone(saved);
+    this.elapsed = cloneState.elapsed;
+    for (const cart of this.golfCarts) { this.scene.remove(cart.object); disposeGolfCart(cart); }
+    this.golfCarts.length = 0;
+    for (const npc of this.golfers) npc.cart = undefined;
+    this.setBays(cloneState.bayCount);
+    this.setRange(cloneState.rangeYards);
+    this.tractor.position.fromArray(cloneState.tractorPosition);
+    this.tractorAngle = cloneState.tractorAngle;
+    this.tractorSpeed = cloneState.tractorSpeed;
+    this.tractorTerrainSpeed = cartSpeedMultiplier(this.tractor.position, this.rangeEnd);
+    this.tractor.rotation.y = this.tractorAngle;
+    this.tractorWheels.forEach((w,i) => w.rotation.x = cloneState.wheelRotations[i] ?? 0);
+    this.tractorSteering.forEach((w,i) => w.rotation.y = cloneState.steeringRotations[i] ?? 0);
+    if (this.collectorRoller) this.collectorRoller.rotation.x = cloneState.collectorRotation;
+    this.latchedCollisions.clear();
+    for (const id of cloneState.latchedCollisions) this.latchedCollisions.add(id);
+    this.cameraMode = cloneState.cameraMode;
+    this.camera.position.fromArray(cloneState.cameraPosition);
+    this.cameraTarget.fromArray(cloneState.cameraTarget);
+    this.lookYaw = cloneState.lookYaw; this.lookPitch = cloneState.lookPitch; this.lookZoom = cloneState.lookZoom;
+    this.looking = false; this.lookHoldUntil = cloneState.lookHoldUntil;
+    this.shakeTime = 0;
+    this.balls.length = 0;
+    for (const b of cloneState.balls) this.balls.push({
+      position: new THREE.Vector3().fromArray(b.position), active: b.active,
+      pickableAt: b.pickableAt === null ? Infinity : b.pickableAt,
+    });
+    this.syncBalls();
+    for (const flight of this.airShots) {
+      this.scene.remove(flight.trail); flight.trail.geometry.dispose(); (flight.trail.material as THREE.Material).dispose();
+    }
+    this.airShots.length = 0;
+    for (const a of cloneState.airShots) {
+      const trail = new THREE.Line(
+        new THREE.BufferGeometry().setFromPoints(a.shot.points.filter((_,i) => i % 6 === 0).map(vector)),
+        new THREE.LineBasicMaterial({ color: "#fff8d8", transparent: true, opacity: 0.42 }),
+      );
+      const index = Math.min(Math.floor(Math.max(0,a.time)*10), trail.geometry.getAttribute("position").count);
+      trail.geometry.setDrawRange(Math.max(0,index-22), Math.min(index,22));
+      this.scene.add(trail);
+      this.airShots.push({ ...a, trail });
+    }
+    this.bouncingBalls.length = 0;
+    for (const b of cloneState.bouncingBalls) this.bouncingBalls.push({
+      position: new THREE.Vector3().fromArray(b.position), velocity: new THREE.Vector3().fromArray(b.velocity),
+    });
+    const airborne = [...this.airShots.filter(a => a.time >= 0).map(a => vector(a.point)), ...this.bouncingBalls.map(b => b.position)];
+    this.flyingBalls.count = airborne.length;
+    airborne.forEach((position,i) => {
+      this.ballDummy.position.copy(position); this.ballDummy.scale.setScalar(1.7); this.ballDummy.updateMatrix();
+      this.flyingBalls.setMatrixAt(i,this.ballDummy.matrix);
+    });
+    this.flyingBalls.instanceMatrix.needsUpdate = true;
+    cloneState.golfers.forEach((g,i) => {
+      const npc = this.golfers[i];
+      npc.type = g.type; npc.status = g.status; npc.moodKey = "";
+      npc.polo?.color.set(GOLFER_TYPES[g.type].color);
+      npc.object.position.fromArray(g.position); npc.object.rotation.y = g.rotation; npc.object.visible = g.visible;
+      npc.mood.visible = g.visible;
+      npc.walk = g.walk ? { ...g.walk, from: new THREE.Vector3().fromArray(g.walk.from), to: new THREE.Vector3().fromArray(g.walk.to) } : undefined;
+      npc.swing.reset().setEffectiveTimeScale(g.swingSpeed).play();
+      npc.swing.time = g.swingTime; npc.swing.paused = g.swingPaused; npc.swing.enabled = g.swingEnabled;
+      npc.mixer.update(0);
+    });
+    for (const c of cloneState.golfCarts) {
+      const npc = this.golfers[c.golfer];
+      const cart = this.createVisitorCart(npc,c.golfer,c.phase === "arriving");
+      cart.park.fromArray(c.park);
+      if(c.phase === "departing") this.departGolfCart(cart);
+      cart.start = c.start; cart.phase = c.phase;
+      cart.object.position.fromArray(c.position); cart.object.rotation.y = c.rotation; cart.driver.visible = c.driverVisible;
+      cart.wheels.forEach((w,i) => w.rotation.x = c.wheels[i]);
+      const polo = cart.driver.getObjectByName("DriverPolo") as THREE.Mesh<THREE.BufferGeometry,THREE.MeshStandardMaterial>;
+      polo.material.color.set("#"+c.polo);
+      if(c.phase !== "departing") npc.cart = cart;
+    }
+    cloneState.animals.forEach((a,i) => {
+      const animal = this.animals[i];
+      animal.object.position.fromArray(a.position); animal.home.fromArray(a.home); animal.target.fromArray(a.target);
+      animal.heading = a.heading; animal.object.rotation.y = a.heading;
+      animal.mode = a.mode; animal.until = a.until; animal.phase = a.phase;
+      animal.walk.time = a.walkTime; animal.walk.setEffectiveTimeScale(a.walkSpeed); animal.mixer.update(0);
+    });
+    for (const h of cloneState.hazards) {
+      const hazard = this.hazards.find(current => current.id === h.id)!;
+      hazard.z = h.z; hazard.cleared = h.cleared; hazard.obstacle = h.obstacle;
+      h.objects.forEach((transform,i) => {
+        const o = hazard.objects[i]; o.position.fromArray(transform.position);
+        o.rotation.set(transform.rotation[0],transform.rotation[1],transform.rotation[2]); o.scale.fromArray(transform.scale);
+        if(h.cleared) this.scene.remove(o); else this.scene.add(o);
+      });
+      const index = this.obstacles.findIndex(o => o.id === hazard.id);
+      if(index >= 0) this.obstacles.splice(index,1);
+    }
+    this.syncHazards();
+    if(cloneState.depots.length === 1) {
+      if(this.secondDepot){
+        this.scene.remove(this.secondDepot.object,this.secondDepot.label);
+        this.secondDepot.label.material.map?.dispose();
+        this.secondDepot.label.material.dispose(); this.secondDepot = undefined;
+      }
+      this.depots.splice(1);
+      const index=this.obstacles.findIndex(o=>o.id==="depot-2"); if(index>=0)this.obstacles.splice(index,1);
+    } else {
+      this.addSecondDepot();
+      const p = this.depots[1].fromArray(cloneState.depots[1]);
+      this.secondDepot!.object.position.copy(p); this.secondDepot!.label.position.set(p.x,5.7,p.z);
+      const depot=this.obstacles.find(o=>o.id==="depot-2");
+      if(depot?.kind==="box"){depot.minX=p.x-2.25;depot.maxX=p.x+2.25;depot.minZ=p.z-2.8;depot.maxZ=p.z-.35;}
+    }
+    if(cloneState.helper) {
+      this.enableHelper(); const h=this.helper!, savedHelper=cloneState.helper;
+      h.object.position.fromArray(savedHelper.position); h.angle=savedHelper.angle; h.object.rotation.y=h.angle;
+      h.hopper=savedHelper.hopper;h.index=Math.min(savedHelper.index,this.helperRoute.length-1);h.pauseUntil=savedHelper.pauseUntil;
+      if(h.roller)h.roller.rotation.x=savedHelper.roller;
+    } else if(this.helper){this.scene.remove(this.helper.object);this.helper=undefined;}
+    this.camera.lookAt(this.cameraTarget);
+    this.environment.update(this.elapsed);
+    this.renderer.render(this.scene,this.camera);
+  }
+
   resize() {
     const width = this.canvas.clientWidth,
       height = this.canvas.clientHeight;
@@ -1978,7 +2299,7 @@ export class RangeScene {
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(width, height, false);
-    this.camera.fov = width < 650 ? 64 : 48;
+    this.camera.fov = width < 650 ? 64 : 54;
     this.camera.updateProjectionMatrix();
   }
 
@@ -1988,6 +2309,11 @@ export class RangeScene {
       Math.min(devicePixelRatio, quality === "high" ? 1.6 : 1),
     );
     this.renderer.shadowMap.enabled = quality === "high";
+    this.environment.setQuality(quality === "high");
     this.resize();
+  }
+
+  setWind(speed: number) {
+    this.environment.setWind(speed);
   }
 }

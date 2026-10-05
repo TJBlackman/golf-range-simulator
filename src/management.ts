@@ -1,5 +1,7 @@
-export const HOPPER_CAPACITY = 100;
-export const INITIAL_RESERVE = 84;
+export const HOPPER_CAPACITY = 75;
+/** Cash paid on top of a delivery when the hopper arrives completely full. */
+export const FULL_LOAD_BONUS = 5;
+export const INITIAL_RESERVE = 50;
 export const GOLFER_COUNT = 7;
 export const MAX_BAYS = 12;
 export const STARTING_CASH = 20;
@@ -8,6 +10,14 @@ export const GAME_OVER_SECONDS = 30;
 export const TIP_STREAK = 10;
 export const STOCK_BUNDLE = 50;
 export const WALKOUT_SECONDS = 4;
+/** Drive in, park, and walk to the mat before taking the first shot. */
+export const ARRIVAL_READY_SECONDS = 8.25;
+/** Seconds after the shift opens before the first cart of the opening lineup rolls in, as a random range. */
+export const OPENING_FIRST_CART_SECONDS = [0.3, 0.8] as const;
+/** Random gap between one opening cart and the next. Seven bays fill in roughly fifteen seconds. */
+export const OPENING_CART_GAP_SECONDS = [0.7, 1.5] as const;
+/** Share of golfers who set up on the other side of the ball. */
+export const LEFT_HANDED_CHANCE = 0.1;
 /** Range length per tier, in yards. */
 export const RANGE_TIERS = [100, 150, 200, 250, 300];
 /** Shot interval multiplier per range tier: short ranges play slow. */
@@ -93,6 +103,10 @@ export type GolferState = {
   id: number;
   type: GolferType;
   status: GolferStatus;
+  /** Left-handed golfers stand on the far side of the tee and swing the other way. */
+  leftHanded: boolean;
+  /** An opening lineup golfer is still on the way to this bay. They keep their preset type and are already counted as served. */
+  booked: boolean;
   patience: number;
   waiting: boolean;
   nextShot: number;
@@ -138,7 +152,7 @@ export type Upgrade = {
 };
 
 export const ENGINE_SPEEDS = [9, 11.5, 14, 17];
-export const HOPPER_CAPACITIES = [HOPPER_CAPACITY, 150, 220];
+export const HOPPER_CAPACITIES = [HOPPER_CAPACITY, 100, 125, 150];
 export const COLLECTOR_HALF_WIDTHS = [1.6, 2.6, 3.6];
 export const CAGE_RATES = [0.15, 0.08, 0];
 export const BUMPER_RATES = [0.5, 0.3, 0.15];
@@ -159,9 +173,9 @@ export const UPGRADES: Upgrade[] = [
     id: "hopper",
     name: "Hopper",
     category: "cart",
-    blurb: "Balls the cart can carry.",
-    costs: [50, 120],
-    levels: ["100 balls", "150 balls", "220 balls"],
+    blurb: `Balls the cart can carry. A full load pays a $${FULL_LOAD_BONUS} delivery bonus.`,
+    costs: [40, 90, 160],
+    levels: ["75 balls", "100 balls", "125 balls", "150 balls"],
   },
   {
     id: "collector",
@@ -268,7 +282,7 @@ export function spillAmount(
   return Math.min(hopper, Math.ceil(hopper * rate));
 }
 
-const INITIAL_LINEUP: GolferType[] = [
+export const INITIAL_LINEUP: GolferType[] = [
   "casual",
   "family",
   "casual",
@@ -279,6 +293,81 @@ const INITIAL_LINEUP: GolferType[] = [
 ];
 const clamp = (n: number, low: number, high: number) =>
   Math.max(low, Math.min(high, n));
+
+const MANAGEMENT_NUMBERS = [
+  "reserve", "hopper", "collected", "returned", "spilled", "deliveries",
+  "obstacleHits", "ballHits", "ballsHit", "ballsLost", "helperReturned", "time",
+  "cash", "earned", "tips", "spent", "reputation", "walkouts", "arrivals",
+  "served", "emptyFor", "bonuses", "fullLoads",
+] as const;
+const FRACTIONAL_STATE = new Set<string>(["time", "cash", "earned", "tips", "spent", "reputation", "emptyFor", "bonuses"]);
+/** Stats added after the first saves shipped. Older saves load with these at zero. */
+const OPTIONAL_STATE = new Set<string>(["bonuses", "fullLoads"]);
+export type ManagementSnapshot = Record<typeof MANAGEMENT_NUMBERS[number], number> & {
+  over: boolean;
+  levels: Record<UpgradeId, number>;
+  golfers: GolferState[];
+  events: SimEvent[];
+  randomState: number;
+};
+
+/** Validate and copy only the known save fields before changing a live shift. */
+export function validateManagementSnapshot(input: unknown): ManagementSnapshot {
+  const record = (value: unknown): Record<string, unknown> => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("The saved range state is invalid.");
+    return value as Record<string, unknown>;
+  };
+  const number = (value: unknown, max = 1e12, integer = false) => {
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > max || (integer && !Number.isSafeInteger(value)))
+      throw new Error("The saved range contains an invalid number.");
+    return value;
+  };
+  const boolean = (value: unknown) => {
+    if (typeof value !== "boolean") throw new Error("The saved range contains an invalid flag.");
+    return value;
+  };
+  const source = record(input);
+  const numbers = {} as Record<typeof MANAGEMENT_NUMBERS[number], number>;
+  for (const key of MANAGEMENT_NUMBERS)
+    numbers[key] = OPTIONAL_STATE.has(key) && source[key] === undefined
+      ? 0
+      : number(source[key], key === "reputation" ? 100 : 1e12, !FRACTIONAL_STATE.has(key));
+  const savedLevels = record(source.levels);
+  const levels = {} as Record<UpgradeId, number>;
+  for (const upgrade of UPGRADES)
+    levels[upgrade.id] = number(savedLevels[upgrade.id], upgrade.repeat ? 1e9 : upgrade.costs.length, true);
+  if (numbers.hopper > HOPPER_CAPACITIES[levels.hopper]) throw new Error("The saved hopper exceeds its capacity.");
+  if (!Array.isArray(source.golfers) || source.golfers.length !== BAY_COUNTS[levels.bays]) throw new Error("The saved hitting bays do not match their upgrade level.");
+  const golferType = (value: unknown): GolferType => {
+    if (typeof value !== "string" || !Object.hasOwn(GOLFER_TYPES, value)) throw new Error("The saved golfer type is invalid.");
+    return value as GolferType;
+  };
+  const golfers = source.golfers.map((value, index): GolferState => {
+    const saved = record(value);
+    if (saved.id !== index || typeof saved.status !== "string" || !["playing", "leaving", "empty"].includes(saved.status)) throw new Error("The saved golfer status is invalid.");
+    return {
+      id: index, type: golferType(saved.type), status: saved.status as GolferStatus,
+      // Saves written before handedness and the opening lineup existed hold seated right-handers.
+      leftHanded: saved.leftHanded === undefined ? false : boolean(saved.leftHanded),
+      booked: saved.booked === undefined ? false : boolean(saved.booked),
+      patience: number(saved.patience, 100), waiting: boolean(saved.waiting),
+      nextShot: number(saved.nextShot), shots: number(saved.shots, 1e12, true),
+      streak: number(saved.streak, 1e12, true), buffer: number(saved.buffer, DISPENSER_BUFFERS[levels.dispensers], true),
+      until: number(saved.until),
+    };
+  });
+  if (!Array.isArray(source.events) || source.events.length > 1000) throw new Error("The saved event queue is invalid.");
+  const events = source.events.map((value): SimEvent => {
+    const saved = record(value);
+    if (saved.kind === "over") return { kind: "over" };
+    if (saved.kind !== "arrival" && saved.kind !== "walkout" && saved.kind !== "tip") throw new Error("The saved event type is invalid.");
+    const golfer = number(saved.golfer, golfers.length - 1, true), type = golferType(saved.type);
+    return saved.kind === "tip"
+      ? { kind: "tip", golfer, type, amount: number(saved.amount, 1000) }
+      : { kind: saved.kind, golfer, type };
+  });
+  return { ...numbers, levels, golfers, events, over: boolean(source.over), randomState: number(source.randomState, 4294967295, true) };
+}
 
 export class RangeManagement {
   reserve = INITIAL_RESERVE;
@@ -296,6 +385,10 @@ export class RangeManagement {
   cash = STARTING_CASH;
   earned = 0;
   tips = 0;
+  /** Cash earned from full load delivery bonuses. */
+  bonuses = 0;
+  /** Deliveries made with the hopper completely full. */
+  fullLoads = 0;
   spent = 0;
   reputation = STARTING_REPUTATION;
   walkouts = 0;
@@ -321,10 +414,12 @@ export class RangeManagement {
   readonly golfers: GolferState[] = INITIAL_LINEUP.map((type, id) => ({
     id,
     type,
-    status: "playing",
+    status: "empty",
+    leftHanded: false,
+    booked: true,
     patience: 100,
     waiting: false,
-    nextShot: 0.6 + id * 0.48,
+    nextShot: 0,
     shots: 0,
     streak: 0,
     buffer: 0,
@@ -333,9 +428,49 @@ export class RangeManagement {
   private events: SimEvent[] = [];
 
   private readonly random: () => number;
+  private randomState = Math.floor(Math.random() * 4294967296);
 
-  constructor(random: () => number = Math.random) {
-    this.random = random;
+  constructor(random?: () => number) {
+    this.random = random ?? (() => {
+      this.randomState = (Math.imul(this.randomState, 1664525) + 1013904223) >>> 0;
+      return this.randomState / 4294967296;
+    });
+    // The opening lineup drives in one cart at a time. Higher numbered bays sit
+    // farther from the entrance, so filling them first keeps the faster carts
+    // ahead on the entry lane instead of overtaking the slower ones.
+    let at = this.between(OPENING_FIRST_CART_SECONDS);
+    for (const golfer of [...this.golfers].reverse()) {
+      golfer.until = at;
+      at += this.between(OPENING_CART_GAP_SECONDS);
+    }
+  }
+
+  private between([low, high]: readonly [number, number]) {
+    return low + this.random() * (high - low);
+  }
+
+  private rollHandedness() {
+    return this.random() < LEFT_HANDED_CHANCE;
+  }
+
+  exportState(): ManagementSnapshot {
+    const numbers = {} as Record<typeof MANAGEMENT_NUMBERS[number], number>;
+    for (const key of MANAGEMENT_NUMBERS) numbers[key] = this[key];
+    return {
+      ...numbers, over: this.over, randomState: this.randomState,
+      levels: { ...this.levels }, golfers: this.golfers.map(golfer => ({ ...golfer })),
+      events: this.events.map(event => ({ ...event })),
+    };
+  }
+
+  restoreState(input: unknown) {
+    const snapshot = validateManagementSnapshot(input);
+    for (const key of MANAGEMENT_NUMBERS) this[key] = snapshot[key];
+    for (const upgrade of UPGRADES) this.levels[upgrade.id] = snapshot.levels[upgrade.id];
+    this.golfers.splice(0, this.golfers.length, ...snapshot.golfers);
+    this.events = snapshot.events;
+    this.over = snapshot.over;
+    this.randomState = snapshot.randomState;
   }
 
   get bays() {
@@ -384,6 +519,11 @@ export class RangeManagement {
     return this.reserve + this.golfers.reduce((sum, g) => sum + g.buffer, 0);
   }
 
+  /** Normal pace at the opening supply, up to twice as fast or 50% longer intervals. */
+  get supplyPace() {
+    return clamp(1.5 - this.supply / (INITIAL_RESERVE * 2), 0.5, 1.5);
+  }
+
   takeEvents(): SimEvent[] {
     return this.events.splice(0);
   }
@@ -429,7 +569,7 @@ export class RangeManagement {
           golfer.streak++;
           golfer.waiting = false;
           golfer.nextShot =
-            this.time + profile.interval * this.pace + golfer.id * 0.03;
+            this.time + (profile.interval * this.pace + golfer.id * 0.03) * this.supplyPace;
           this.ballsHit++;
           this.earn(profile.pay);
           if (golfer.streak % TIP_STREAK === 0 && golfer.patience >= 70) {
@@ -459,14 +599,17 @@ export class RangeManagement {
       if (golfer.patience <= 0) this.walkout(golfer);
     }
     const present = this.present;
+    const booked = this.golfers.some((g) => g.booked);
     const target = present.length
       ? present.reduce((sum, g) => sum + g.patience, 0) / present.length
-      : this.supply >= 20
-        ? 45
-        : 0;
+      : booked
+        ? this.reputation
+        : this.supply >= 20
+          ? 45
+          : 0;
     this.reputation += (target - this.reputation) * Math.min(1, dt * 0.05);
     this.reputation = clamp(this.reputation, 0, 100);
-    const anyone = this.golfers.some((g) => g.status !== "empty");
+    const anyone = this.golfers.some((g) => g.status !== "empty" || g.booked);
     if (!anyone && this.stars < 1) this.emptyFor += dt;
     else this.emptyFor = 0;
     if (this.emptyFor >= GAME_OVER_SECONDS) {
@@ -491,14 +634,19 @@ export class RangeManagement {
   }
 
   private arrive(golfer: GolferState) {
-    golfer.type = this.pickType();
+    const booked = golfer.booked;
+    golfer.booked = false;
+    if (!booked) golfer.type = this.pickType();
     golfer.status = "playing";
+    golfer.leftHanded = this.rollHandedness();
     golfer.patience = 100;
     golfer.waiting = false;
     golfer.shots = 0;
     golfer.streak = 0;
     golfer.buffer = 0;
-    golfer.nextShot = this.time + 2.5;
+    golfer.nextShot = this.time + ARRIVAL_READY_SECONDS;
+    // The opening lineup is already counted as served and needs no announcement.
+    if (booked) return;
     this.arrivals++;
     this.served++;
     this.events.push({ kind: "arrival", golfer: golfer.id, type: golfer.type });
@@ -548,6 +696,8 @@ export class RangeManagement {
         id: this.golfers.length,
         type: "casual",
         status: "empty",
+        leftHanded: false,
+        booked: false,
         patience: 0,
         waiting: false,
         nextShot: 0,
@@ -568,19 +718,26 @@ export class RangeManagement {
     return accepted;
   }
 
-  unload(): number {
+  /** Return the load to the depot. A completely full hopper earns FULL_LOAD_BONUS on top. */
+  unload(): { count: number; bonus: number } {
     const count = this.hopper;
-    if (!count) return 0;
+    if (!count) return { count: 0, bonus: 0 };
+    const bonus = count === this.hopperCapacity ? FULL_LOAD_BONUS : 0;
     this.reserve += count;
     this.returned += count;
     this.deliveries++;
     this.hopper = 0;
+    if (bonus) {
+      this.earn(bonus);
+      this.bonuses += bonus;
+      this.fullLoads++;
+    }
     // A fresh delivery gives the waiting golfers some immediate reassurance.
     for (const golfer of this.golfers)
       if (golfer.status === "playing")
         golfer.patience = Math.min(100, golfer.patience + 8);
     this.reputation = Math.min(100, this.reputation + 6);
-    return count;
+    return { count, bonus };
   }
 
   deliverHelper(count: number) {

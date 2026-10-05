@@ -1,0 +1,73 @@
+{
+  "date": "2026-10-04",
+  "renderer": "Three.js 0.186.1 / WebGL 2",
+  "application": "Pine Valley — Golf Range Simulator",
+  "url": "http://localhost:5178/",
+  "productionBuild": "passed",
+  "gameplayAndPersistenceTests": { "passed": 23, "failed": 0 },
+  "assetValidation": { "assets": 17, "errors": 0, "warnings": 0, "report": "validation.json" },
+  "completedBrowserChecks": {
+    "allSixteenModelsLoaded": true,
+    "applicationErrors": [],
+    "desktopGameplayVisuallyInspected": true,
+    "desktopWelcomeFits1280x800": true,
+    "mobileWelcomeFits390x844": true,
+    "mobileHorizontalOverflow": false,
+    "mobileGameplayInspected390x844": true,
+    "mobileTouchControlsAndMapOverlap": false,
+    "mobileDriveButtonClicked": true,
+    "chaseAndOverviewCameras": true,
+    "expanded300YardRangeInspected": true,
+    "finalCageAndHopperUpgradeMeshesInspected": true,
+    "pauseAndResume": true,
+    "settings": {
+      "lowQualityDisablesShadowsAndVerge": true,
+      "highQualityRestoresShadowsAndVerge": true,
+      "calmWindStrength": 0,
+      "breezeWindSpeed": 1.8
+    },
+    "animationClips": [
+      { "asset": "golfer", "name": "PracticeSwing", "changesPose": true },
+      { "asset": "goose", "name": "Walk", "changesPose": true },
+      { "asset": "fox", "name": "Walk", "changesPose": true },
+      { "asset": "deer", "name": "Walk", "changesPose": true }
+    ]
+  },
+  "golferAndCartFollowUp": {
+    "rightHandedStanceRadians": -1.5707963267948966,
+    "swingDurationSeconds": 3,
+    "impactClipSeconds": 1.4166666666666667,
+    "headHighBackswingAndFollowThroughInspected": true,
+    "clubHeadMeetsTeeAtImpact": true,
+    "visitorCartsParkedInitially": 7,
+    "arrivalDriverVisible": true,
+    "arrivalWalkBeforeFirstShot": true,
+    "departureDriverVisibleAfterBoarding": true,
+    "departureMotionChecked": true
+  },
+  "browserPersistence": {
+    "namedSaveCreatedThroughUI": true,
+    "namedSaveLoadPreservesEconomyAndWorldExactly": true,
+    "continueAfterBrowserReload": true,
+    "namedOverwriteAndDeleteThroughUI": true,
+    "corruptSaveVisibleAndLoadDisabled": true,
+    "corruptSaveDoesNotChangeCurrentShift": true,
+    "arrivingAndDepartingCartsRoundTripExactly": true,
+    "midSwingAirborneAndBouncingBallsRoundTripExactly": true,
+    "invalidWorldRejectedBeforeMutation": true,
+    "multiTabOwnershipRegressionTest": "passed",
+    "loadingEarlierSaveRemovesLaterRangeBaysDepotAndHelperUpgrades": true,
+    "mobileSaveDialogFits390x844WithoutHorizontalOverflow": true,
+    "mobileSaveDialogWidth": 356,
+    "storage": "localStorage; version 1 slots; browser and origin scoped"
+  },
+  "runtimeIntegration": {
+    "collection": { "balls": 19, "collisions": 0 },
+    "delivery": { "hopper": 0, "reserveBefore": 84, "reserveAfter": 103, "returned": 19 },
+    "upgrades": { "bays": 12, "capacity": 220, "depots": 2, "helper": true, "roller": true, "tractorWheels": 4, "yards": 300 },
+    "render": { "highCalls": 782, "lowCalls": 227, "trianglesIncludingShadowPass": 3130431, "scope": "Measured before visitor golf carts were added; final real-time FPS was not benchmarked." },
+    "errors": []
+  },
+  "scope": "Collection used deterministic runtime drive steps because background animation frames are throttled by the collaborative browser. Delivery used the actual Return UI. Upgrades used the exposed application debug API; final meshes, both cameras, and desktop/mobile layouts were visually inspected. Real-time frame rate was not benchmarked.",
+  "browserNote": "Collaborative preview intermittently disconnected and recovered. The final fresh shift was loaded at localhost:5178. System browser launching was rejected by policy; the available collaborative preview was used."
+}

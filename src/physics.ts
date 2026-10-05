@@ -1,5 +1,5 @@
 export const YARD = 0.9144;
-export const TEE = { x: 0.46, y: 0.34, z: 4.73 };
+export const TEE = { x: -0.46, y: 0.34, z: 4.73 };
 /** The back fence sits this many yards past the tee. */
 export const RANGE_YARDS = 300;
 export const RANGE_END = TEE.z + RANGE_YARDS * YARD;

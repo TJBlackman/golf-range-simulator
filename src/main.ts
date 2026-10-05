@@ -9,9 +9,14 @@ import {
   UPGRADES,
   GOLFER_TYPES,
   STOCK_BUNDLE,
+  INITIAL_RESERVE,
+  FULL_LOAD_BONUS,
+  validateManagementSnapshot,
 } from "./management";
-import type { SpillCause, UpgradeId, UpgradeCategory } from "./management";
+import type { SpillCause, UpgradeId, UpgradeCategory, ManagementSnapshot } from "./management";
 import { TARGETS, YARD } from "./physics";
+import { SaveStore, SaveOwnership, SAVE_NAME_LIMIT, ACTIVE_SHIFT_KEY } from "./saves";
+import { validateWorldState } from "./world-state";
 
 const icons = {
   menu: '<path d="M5 7h14M5 12h14M5 17h14"/>',
@@ -61,27 +66,29 @@ const storage = {
 $("#app").innerHTML = `
 <main class="game" aria-label="Golf range ball collector">
   <canvas id="range" aria-label="3D driving range with a drivable ball collector and autonomous golfers"></canvas>
+  <div class="range-identity" aria-label="Pine Valley driving range"><div class="range-crest">${icon("flag", 21)}</div><div><strong>Pine Valley</strong><span id="range-conditions">100 YD RANGE · LIGHT BREEZE</span></div></div>
   <button id="pause" class="menu-button hud-surface" aria-label="Open game menu" aria-controls="pause-overlay" aria-expanded="false" title="Menu · Esc / P">${icon("menu", 18)}</button>
+  <div class="control-hints" aria-hidden="true"><span><kbd>W A S D</kbd> Drive</span><span><kbd>Space</kbd> Brake</span><span><kbd>C</kbd> Camera</span><span>Drag to look · Scroll to zoom</span></div>
 
   <aside class="game-hud hud-surface" aria-label="Range status">
     <div class="hud-primary">
       <div id="cash-stat" class="hud-stat primary" title="Cash from golfers, spend it at the depot"><div><span class="stat-label">CASH</span><strong id="cash">$20</strong></div></div>
-      <div id="supply-stat" class="hud-stat primary" title="Balls ready for the golfers"><div><span class="stat-label">SUPPLY</span><strong id="reserve-count">84</strong></div></div>
+      <div id="supply-stat" class="hud-stat primary" title="Balls ready for the golfers"><div><span class="stat-label">SUPPLY</span><strong id="reserve-count">${INITIAL_RESERVE}</strong></div></div>
     </div>
-    <div id="mood-stat" class="hud-stat" title="Golfer satisfaction"><div><span id="mood-label" class="stat-label">MOOD</span><strong><span id="satisfaction">100</span><small>%</small></strong></div></div>
-    <div id="hopper-stat" class="hud-stat" title="Balls in your cart"><div><span class="stat-label">HOPPER</span><strong><span id="hopper-count">0</span><small> / <span id="hopper-cap">100</span></small></strong><div class="hopper-track"><i id="hopper-bar"></i></div></div></div>
+    <div id="mood-stat" class="hud-stat" title="Golfer satisfaction"><div><span id="mood-label" class="stat-label">SATISFACTION</span><strong><span id="satisfaction">100</span><small>%</small></strong></div></div>
+    <div id="hopper-stat" class="hud-stat" title="Balls in your cart"><div><span class="stat-label">HOPPER</span><strong><span id="hopper-count">0</span><small> / <span id="hopper-cap">75</span></small></strong><div class="hopper-track"><i id="hopper-bar"></i></div></div></div>
   </aside>
 
   <div id="notice" class="notice hud-surface" role="status" aria-live="polite" hidden><strong id="notice-title"></strong><span id="notice-detail" class="sr-only"></span></div>
-  <div class="actions"><button id="unload" class="return-button hud-surface" hidden>Return balls <kbd>E</kbd></button><button id="shop-toggle" class="return-button shop-button hud-surface" hidden>Shop <kbd>B</kbd></button></div>
-  <aside id="shop" class="shop hud-surface" aria-label="Depot shop" hidden><div class="shop-head"><span class="eyebrow">DEPOT SHOP</span><strong id="shop-cash">$0</strong><button id="shop-close" class="icon-button" aria-label="Close shop">${icon("close", 16)}</button></div><div id="shop-list"></div></aside>
+  <div class="actions"><button id="unload" class="return-button hud-surface" hidden>Return balls <kbd>E</kbd></button><button id="shop-toggle" class="return-button shop-button hud-surface" hidden>Equipment <kbd>B</kbd></button></div>
+  <aside id="shop" class="shop hud-surface" aria-label="Depot shop" hidden><div class="shop-head"><span class="eyebrow">EQUIPMENT DEPOT</span><strong id="shop-cash">$0</strong><button id="shop-close" class="icon-button" aria-label="Close shop">${icon("close", 16)}</button></div><div id="shop-list"></div></aside>
 
   <div class="drive-pad" aria-label="Touch driving controls"><button data-drive="forward" aria-label="Drive forward">↑</button><button data-drive="left" aria-label="Steer left">←</button><button data-drive="backward" aria-label="Reverse">↓</button><button data-drive="right" aria-label="Steer right">→</button><button id="touch-brake" aria-label="Brake" title="Brake">■</button></div>
 
-  <aside class="map-panel hud-surface" aria-label="Range map"><canvas id="minimap" width="240" height="560" aria-label="Overhead map: orange arrow is your cart, amber squares are the return depots, white dots are balls"></canvas><span class="map-north" aria-hidden="true">N ↑</span></aside>
+  <aside class="map-panel hud-surface" aria-label="Range map"><div class="map-heading"><span>FIELD MAP</span><span class="map-north" aria-hidden="true">N ↑</span></div><canvas id="minimap" width="240" height="560" aria-label="Overhead map: brass arrow is your cart, amber squares are the return depots, white dots are balls"></canvas></aside>
 
   <dialog id="pause-overlay" class="game-menu" aria-labelledby="pause-title">
-    <div class="menu-heading"><span class="eyebrow">SHIFT PAUSED</span><span id="shift-clock">00:00</span></div><h2 id="pause-title">Your shift.</h2>
+    <div class="menu-heading"><span class="eyebrow">RANGE OPERATIONS</span><span id="shift-clock">00:00</span></div><h2 id="pause-title">Shift paused.</h2>
     <div class="menu-stats"><div><strong id="returned-count">0</strong><span>Returned</span></div><div><strong id="delivery-count">0</strong><span>Deliveries</span></div><div><strong id="spilled-count">0</strong><span>Spilled</span></div><div><strong id="earned-count">$0</strong><span>Earned</span></div></div>
     <button id="resume" class="primary-button">Resume ${icon("play", 16)}</button>
     <div class="menu-actions"><button id="camera" class="menu-action" aria-label="Switch to overhead camera">${icon("camera", 17)}<span>Overhead camera</span></button><button id="sound" class="menu-action" aria-label="Mute sound">${icon("sound", 17)}<span>Sound on</span></button><button id="help" class="menu-action">${icon("help", 17)}<span>How to play</span></button><button id="settings" class="menu-action">${icon("settings", 17)}<span>Settings</span></button></div>
@@ -89,10 +96,10 @@ $("#app").innerHTML = `
     <p class="menu-controls">WASD drive · Space brake · E return · B shop<br>Drag mouse to look · Scroll to zoom · C camera · Esc / P menu</p>
   </dialog>
 
-  <div id="loading-screen" class="welcome-overlay"><section class="welcome-card"><div class="welcome-emblem">${icon("tractor", 42)}</div><span class="eyebrow">WELCOME TO PINE VALLEY</span><h2>The range runs<br>on you.</h2><p>Golfers pay for every ball they hit.<br>Start on a 100 yard range, spend the cash, and grow it to 300.</p><div class="welcome-rules"><span>${icon("bucket", 17)} Return balls to resupply the golfers.</span><span>${icon("flag", 17)} Park at the depot and press <b>B</b> to buy upgrades.</span><span>${icon("happy", 17)} Patience at zero and a golfer walks. Empty bays for <b>30s</b> ends the shift.</span><span>${icon("warning", 17)} Obstacle collision: spill <b>50%</b> of your load.</span><span>${icon("warning", 17)} Flying ball strike: spill <b>15%</b> of your load.</span></div><button id="start" class="primary-button" disabled><span id="loading-label">Preparing the range…</span>${icon("arrow", 18)}</button><div class="loading-track"><i id="loading-progress"></i></div><small id="loading-caption">Loading your Blender models</small><small id="best-score" class="best-score" hidden></small></section></div>
-  <div id="gameover-screen" class="welcome-overlay" hidden><section class="welcome-card"><div class="welcome-emblem">${icon("flag", 42)}</div><span class="eyebrow">THE RANGE WENT QUIET</span><h2>Shift over.</h2><p id="gameover-summary"></p><div class="menu-stats"><div><strong id="final-earned">$0</strong><span>Earned</span></div><div><strong id="final-served">0</strong><span>Golfers served</span></div><div><strong id="final-best">$0</strong><span>Best shift</span></div></div><button id="restart" class="primary-button">Run it again ${icon("reset", 18)}</button></section></div>
+  <div id="loading-screen" class="welcome-overlay"><section class="welcome-card"><div class="welcome-emblem">${icon("flag", 24)}</div><span class="eyebrow">THE DRIVING RANGE</span><h2>Pine Valley.<em>A day's work, outdoors.</em></h2><p>Take the wheel. Keep the bays supplied. Build a better range, one collection at a time.</p><div class="welcome-rules"><div class="briefing-step"><span>01</span><div><strong>Collect & return</strong><p>Drive over loose balls. Stop at the depot and press <kbd>E</kbd> to unload.</p></div></div><div class="briefing-step"><span>02</span><div><strong>Earn & improve</strong><p>Golfers pay for every shot. Press <kbd>B</kbd> at the depot for equipment and range upgrades.</p></div></div><div class="briefing-step"><span>03</span><div><strong>Keep the range running</strong><p>Keep golfers supplied or they'll leave. Thirty seconds with every bay empty ends your shift.</p></div></div></div><div class="welcome-risks">Protect your load: collisions spill <b>50%</b>, ball strikes spill <b>15%</b>.</div><button id="start" class="primary-button" disabled><span id="loading-label">Preparing the range…</span>${icon("arrow", 18)}</button><div class="loading-track"><i id="loading-progress"></i></div><small id="loading-caption">Preparing the course and equipment</small><small id="best-score" class="best-score" hidden></small></section></div>
+  <div id="gameover-screen" class="welcome-overlay" hidden><section class="welcome-card"><div class="welcome-emblem">${icon("flag", 24)}</div><span class="eyebrow">SHIFT REPORT</span><h2>Day's end.</h2><p id="gameover-summary"></p><div class="menu-stats"><div><strong id="final-earned">$0</strong><span>Earned</span></div><div><strong id="final-served">0</strong><span>Golfers served</span></div><div><strong id="final-best">$0</strong><span>Best shift</span></div></div><button id="restart" class="primary-button">Start a new shift ${icon("reset", 18)}</button></section></div>
   <dialog id="dialog"><button id="dialog-close" class="icon-button dialog-close" aria-label="Close dialog">${icon("close")}</button><div id="dialog-content"></div></dialog>
-  <div id="error-screen" class="welcome-overlay" hidden><section class="welcome-card"><span class="eyebrow">THE RANGE COULDN’T OPEN</span><h2>Let’s try again.</h2><p id="error-message"></p><button id="reload" class="primary-button">Reload range ${icon("reset", 18)}</button></section></div>
+  <div id="error-screen" class="welcome-overlay" hidden><section class="welcome-card"><span class="eyebrow">RANGE UNAVAILABLE</span><h2>Unable to open.</h2><p id="error-message"></p><button id="reload" class="primary-button">Reload range ${icon("reset", 18)}</button></section></div>
 </main>`;
 
 const sim = new RangeManagement();
@@ -120,6 +127,30 @@ const incidents: {
   obstacle?: string;
 }[] = [];
 const errors: string[] = [];
+type GameSave = {
+  management: ManagementSnapshot;
+  world: ReturnType<RangeScene["exportState"]>;
+  preferences: { wind: number; quality: "high" | "low"; camera: "chase" | "overview"; sound: boolean };
+  main: { started: boolean; over: boolean; incidents: typeof incidents };
+};
+const saves = new SaveStore<GameSave>({
+  get length() { return localStorage.length; },
+  key: index => localStorage.key(index),
+  getItem: key => localStorage.getItem(key),
+  setItem: (key, value) => localStorage.setItem(key, value),
+  removeItem: key => localStorage.removeItem(key),
+}, validateSavePayload);
+const saveOwnership = new SaveOwnership({
+  getItem: key => localStorage.getItem(key),
+  setItem: (key, value) => localStorage.setItem(key, value),
+}, crypto.randomUUID());
+let saveDialogOpen = false;
+let saveConfirmation: { action: "load" | "overwrite" | "delete"; id: string } | null = null;
+let suppressPageSave = false;
+$("#resume").insertAdjacentHTML("afterend", `<button id="saved-games" class="menu-action saves-menu-action">${icon("bucket", 17)}<span>Save & load games</span></button><p id="autosave-status" class="autosave-status" role="status">Progress saves automatically on this browser.</p>`);
+$("#start").insertAdjacentHTML("beforebegin", `<button id="continue-shift" class="primary-button" hidden>Continue saved shift ${icon("play", 16)}</button><p id="continue-summary" class="continue-summary" hidden></p>`);
+$("#start").insertAdjacentHTML("afterend", `<button id="welcome-saves" class="welcome-saves-button" disabled>Load a named save</button><p id="welcome-save-status" class="save-message" role="status" hidden></p>`);
+$("#restart").insertAdjacentHTML("afterend", '<button id="ended-saves" class="welcome-saves-button">Save or load a game</button>');
 let world: RangeScene;
 let lastTime = performance.now(),
   fpsStart = lastTime,
@@ -182,6 +213,163 @@ function atDepot() {
 const money = (amount: number) => `$${Math.floor(amount)}`;
 const clock = (seconds: number) =>
   `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(Math.floor(seconds) % 60).padStart(2, "0")}`;
+
+function validateSavePayload(input: unknown): GameSave {
+  const record = (value: unknown): Record<string, unknown> => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("The saved game is incomplete.");
+    return value as Record<string, unknown>;
+  };
+  const source = record(input), preferences = record(source.preferences), main = record(source.main), savedWorld = record(source.world);
+  validateWorldState(savedWorld);
+  const management = validateManagementSnapshot(source.management);
+  if (savedWorld.version !== 1 || savedWorld.rangeYards !== [100, 150, 200, 250, 300][management.levels.range]
+    || savedWorld.bayCount !== [7, 9, 12][management.levels.bays]) throw new Error("The saved course does not match its range upgrades.");
+  if (typeof preferences.wind !== "number" || !Number.isFinite(preferences.wind) || preferences.wind < 0 || preferences.wind > 5
+    || (preferences.quality !== "high" && preferences.quality !== "low")
+    || (preferences.camera !== "chase" && preferences.camera !== "overview") || typeof preferences.sound !== "boolean"
+    || typeof main.started !== "boolean" || main.over !== management.over || !Array.isArray(main.incidents) || main.incidents.length > 20)
+    throw new Error("The saved shift preferences are invalid.");
+  const savedIncidents = main.incidents.map((value): typeof incidents[number] => {
+    const incident = record(value);
+    if ((incident.cause !== "obstacle" && incident.cause !== "ball")
+      || ![incident.before, incident.lost, incident.after].every(value => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= 220)
+      || typeof incident.time !== "number" || !Number.isFinite(incident.time) || incident.time < 0
+      || (incident.obstacle !== undefined && (typeof incident.obstacle !== "string" || incident.obstacle.length > 100)))
+      throw new Error("The saved collision history is invalid.");
+    return { cause: incident.cause, before: incident.before as number, lost: incident.lost as number,
+      after: incident.after as number, time: incident.time, ...(incident.obstacle === undefined ? {} : { obstacle: incident.obstacle as string }) };
+  });
+  return { management, world: structuredClone(savedWorld) as unknown as GameSave["world"],
+    preferences: { wind: preferences.wind, quality: preferences.quality, camera: preferences.camera, sound: preferences.sound },
+    main: { started: main.started, over: management.over, incidents: savedIncidents } };
+}
+
+function exportSave(): GameSave {
+  return { management: sim.exportState(), world: world.exportState(),
+    preferences: { wind: state.wind, quality: world.quality, camera: world.cameraMode, sound: audio.enabled },
+    main: { started: state.started, over: sim.over, incidents: incidents.map(incident => ({ ...incident })) } };
+}
+function saveSummary() { return { time: sim.time, cash: sim.cash, yards: sim.rangeYards, over: sim.over }; }
+function saveMessage(message: string, failed = false) {
+  const target = saveDialogOpen && dialog.open ? $("#save-message") : $("#autosave-status");
+  target.textContent = message;
+  target.classList.toggle("save-error", failed);
+}
+function claimAutosave() {
+  try { saveOwnership.claim(); return true; }
+  catch { saveMessage("This browser could not access saved games. Allow site storage and try again.", true); return false; }
+}
+function autosave(replaceUnreadable = false) {
+  if (!state.ready || !state.started || suppressPageSave) return false;
+  try {
+    if (!saveOwnership.owns()) {
+      saveMessage("Another tab owns the automatic save. Resume here to save this shift automatically.");
+      return false;
+    }
+    const saved = saves.autosave(exportSave(), saveSummary(), replaceUnreadable);
+    saveMessage(`Automatically saved at ${new Date(saved.savedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}. Safe to close this tab.`);
+    return true;
+  } catch (error) {
+    saveMessage(error instanceof Error ? error.message : "Your shift could not be saved.", true);
+    return false;
+  }
+}
+const escapeHtml = (value: string) => value.replace(/[&<>"']/g, character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]!);
+function slotDescription(entry: { savedAt: number; summary?: { time: number; cash: number; yards: number; over: boolean } }) {
+  const date = new Date(entry.savedAt).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  return entry.summary ? `${clock(entry.summary.time)} played · ${money(entry.summary.cash)} · ${entry.summary.yards} yd${entry.summary.over ? " · Shift ended" : ""} · ${date}` : date;
+}
+function updateWelcomeSaves() {
+  try {
+    const entries = saves.list(), automatic = entries.find(entry => entry.id === "autosave");
+    $("#continue-shift").hidden = !automatic || !!automatic.error;
+    $("#continue-summary").hidden = !automatic || !!automatic.error;
+    if (automatic && !automatic.error) $("#continue-summary").textContent = slotDescription(automatic);
+    $("#loading-label").textContent = automatic && !automatic.error ? "Start a new shift" : "Start your shift";
+    $("#welcome-save-status").hidden = !automatic?.error;
+    if (automatic?.error) $("#welcome-save-status").textContent = automatic.error;
+  } catch (error) {
+    $("#welcome-save-status").hidden = false;
+    $("#welcome-save-status").textContent = error instanceof Error ? error.message : "Saved games could not be read.";
+  }
+  $<HTMLButtonElement>("#welcome-saves").disabled = !state.ready;
+}
+
+function renderSaves(message = "") {
+  const formName = dialog.querySelector<HTMLInputElement>("#save-name")?.value ?? "";
+  let rows = "";
+  try {
+    const entries = saves.list();
+    rows = entries.map(entry => {
+      const id = escapeHtml(entry.id), name = escapeHtml(entry.name);
+      const selected = saveConfirmation?.id === entry.id ? saveConfirmation : null;
+      const confirmation = selected ? `<div class="save-confirmation"><p>${selected.action === "delete" ? `Delete “${name}”? This cannot be undone.` : selected.action === "overwrite" ? `Replace “${name}” with the current shift?` : `Load “${name}”? The current shift will be replaced.`}</p><button data-save-action="confirm-${selected.action}" data-save-id="${id}">${selected.action === "delete" ? "Delete save" : selected.action === "overwrite" ? "Replace save" : "Load save"}</button><button data-save-action="cancel">Cancel</button></div>` : "";
+      return `<article class="save-row"><div class="save-row-heading"><strong>${name}</strong>${entry.id === "autosave" ? '<span class="save-tag">AUTO</span>' : ""}</div><p class="${entry.error ? "save-error" : "save-detail"}">${escapeHtml(entry.error ?? slotDescription(entry))}</p><div class="save-row-actions"><button data-save-action="load" data-save-id="${id}" ${entry.error ? "disabled" : ""}>Load</button>${entry.id !== "autosave" && state.started && !entry.error ? `<button data-save-action="overwrite" data-save-id="${id}">Overwrite</button>` : ""}<button data-save-action="delete" data-save-id="${id}">Delete</button></div>${confirmation}</article>`;
+    }).join("") || '<p class="save-empty">No saved games yet. Start a shift, then save it here.</p>';
+  } catch (error) { message = error instanceof Error ? error.message : "Saved games could not be read."; }
+  $("#dialog-content").innerHTML = `<span class="eyebrow">YOUR RANGE, YOUR PACE</span><h2>Saved games.</h2><p class="save-intro">Automatic saves keep your latest shift. Named saves let you keep several games. Saves stay in this browser on this device.</p>${state.started ? `<form id="save-form" class="save-form"><label for="save-name">Name this save</label><div><input id="save-name" name="name" maxlength="${SAVE_NAME_LIMIT}" placeholder="e.g. Pine Valley — day one" value="${escapeHtml(formName)}" autocomplete="off" required><button class="save-create" type="submit">Save game</button></div></form>` : ""}<p id="save-message" class="save-message" role="status">${escapeHtml(message)}</p><div class="save-list">${rows}</div><button data-action="close" class="primary-button">${state.started ? "Back to pause menu" : "Back to the range"} ${icon("arrow", 18)}</button>`;
+  dialog.classList.add("saves-dialog");
+}
+function openSaves() {
+  if (!state.ready) return;
+  if (state.started && !state.paused && !state.over) pause();
+  saveDialogOpen = true;
+  saveConfirmation = null;
+  clearControls();
+  renderSaves();
+  if (!dialog.open) dialog.showModal();
+}
+function loadSave(id: string) {
+  if (!state.ready) return;
+  let saved;
+  try { saved = saves.read(id); if (!saved) throw new Error("This save is no longer available."); }
+  catch (error) { renderSaves(error instanceof Error ? error.message : "The save could not be loaded."); return; }
+  const previous = exportSave(), previousPaused = state.paused;
+  state.paused = true;
+  clearControls();
+  try {
+    sim.restoreState(saved.payload.management);
+    applyUpgrades();
+    world.restoreState(saved.payload.world);
+    world.syncGolfers(sim.golfers);
+    world.setHopper(sim.hopper);
+  } catch (error) {
+    try { sim.restoreState(previous.management); applyUpgrades(); world.restoreState(previous.world); }
+    catch (rollbackError) { console.error("Could not restore the previous scene", rollbackError); }
+    state.paused = previousPaused;
+    renderSaves(error instanceof Error ? `${error.message} Your current shift was kept.` : "The saved game is invalid. Your current shift was kept.");
+    return;
+  }
+  state.started = true;
+  state.over = false;
+  state.wind = saved.payload.preferences.wind;
+  world.setWind(state.wind);
+  world.setQuality(saved.payload.preferences.quality);
+  world.cameraMode = saved.payload.preferences.camera;
+  audio.enabled = saved.payload.preferences.sound;
+  audio.unlock();
+  audio.setEnabled(audio.enabled);
+  updateSound();
+  incidents.splice(0, incidents.length, ...saved.payload.main.incidents);
+  state.noticeUntil = state.impactUntil = state.cashPulseUntil = 0;
+  $("#notice").hidden = true;
+  $("#loading-screen").hidden = true;
+  $("#gameover-screen").hidden = true;
+  $("#shop").hidden = true;
+  $(".game").classList.add("playing");
+  closeDialog();
+  const menu = $<HTMLDialogElement>("#pause-overlay");
+  if (sim.over) { if (menu.open) menu.close(); endGame(); }
+  else {
+    if (!menu.open) menu.showModal();
+    $("#pause").setAttribute("aria-expanded", "true");
+    $("#resume").focus();
+  }
+  lastTime = performance.now();
+  updateHUD();
+  claimAutosave();
+  autosave(true);
+}
 
 function applyUpgrades() {
   const levels = sim.levels;
@@ -281,6 +469,7 @@ function endGame() {
   $(".game").classList.remove("playing");
   clearControls();
   $("#restart").focus();
+  autosave();
 }
 function handleEvents(now: number) {
   for (const event of sim.takeEvents()) {
@@ -324,11 +513,12 @@ function unload() {
     );
     return;
   }
-  const count = sim.unload();
+  const { count, bonus } = sim.unload();
   world.setHopper(0);
   audio.play("unload");
+  if (bonus) state.cashPulseUntil = performance.now() + 600;
   showNotice(
-    `${count} balls returned.`,
+    bonus ? `${count} balls returned. Full load bonus ${money(bonus)}.` : `${count} balls returned.`,
     `${sim.reserve} ready to hit. Your golfers are resupplied.`,
   );
   updateHUD();
@@ -365,7 +555,7 @@ function updateHUD() {
   $("#mood-stat").dataset.mood = mood;
   $("#mood-label").textContent = sim.waiting
     ? `${sim.waiting} WAITING`
-    : "MOOD";
+    : "SATISFACTION";
   $("#mood-stat").setAttribute(
     "aria-label",
     `Golfer satisfaction ${sim.satisfaction}%. ${sim.waiting} waiting for balls.`,
@@ -388,13 +578,15 @@ function updateHUD() {
   $("#unload").innerHTML =
     Math.abs(world.tractorSpeed) > 1
       ? "Brake to return <kbd>Space</kbd>"
-      : `Return ${sim.hopper} balls <kbd>E</kbd>`;
+      : `Return ${sim.hopper} balls${sim.hopper === sim.hopperCapacity ? ` +${money(FULL_LOAD_BONUS)}` : ""} <kbd>E</kbd>`;
   $("#returned-count").textContent = String(sim.returned);
   $("#delivery-count").textContent = String(sim.deliveries);
   $("#spilled-count").textContent = String(sim.spilled);
   $("#earned-count").textContent = money(sim.earned);
   $("#shift-clock").textContent =
     `${String(Math.floor(sim.time / 60)).padStart(2, "0")}:${String(Math.floor(sim.time) % 60).padStart(2, "0")}`;
+  $("#range-conditions").textContent =
+    `${sim.rangeYards} YD RANGE · ${state.wind ? "LIGHT BREEZE" : "CALM CONDITIONS"}`;
   drawMap();
 }
 
@@ -417,12 +609,12 @@ function drawMap() {
     left = map(57, 0).x,
     right = map(-57, 0).x,
     bottom = map(0, -3).y;
-  ctx.fillStyle = "#c3d2a9";
+  ctx.fillStyle = "#354b3b";
   ctx.beginPath();
   ctx.roundRect(left, top, right - left, bottom - top, 8);
   ctx.fill();
   for (let i = 0; i < 8; i++) {
-    ctx.fillStyle = i % 2 ? "#b8c99e" : "#bfcfa5";
+    ctx.fillStyle = i % 2 ? "#364b3a" : "#3c5240";
     ctx.fillRect(
       left + 2 + (i * (right - left - 4)) / 8,
       top + 2,
@@ -430,15 +622,15 @@ function drawMap() {
       bottom - top - 4,
     );
   }
-  ctx.strokeStyle = "#93a784";
-  ctx.lineWidth = 2;
+  ctx.strokeStyle = "#88967a";
+  ctx.lineWidth = 1;
   ctx.setLineDash([4, 5]);
   ctx.strokeRect(left + 1, top + 1, right - left - 2, bottom - top - 2);
   ctx.setLineDash([]);
   for (const target of TARGETS) {
     if (target.z >= world.rangeEnd - 18) continue;
     const p = map(target.x, target.z);
-    ctx.fillStyle = "#aabf8e";
+    ctx.fillStyle = "#657852";
     ctx.beginPath();
     ctx.arc(p.x, p.y, 12 * YARD * scale, 0, Math.PI * 2);
     ctx.fill();
@@ -454,7 +646,7 @@ function drawMap() {
       obstacle.id.startsWith("depot")
     )
       continue;
-    ctx.fillStyle = obstacle.name === "Tree" ? "#6f8657" : "#9c8463";
+    ctx.fillStyle = obstacle.name === "Tree" ? "#83916a" : "#97866d";
     if (obstacle.kind === "circle") {
       const p = map(obstacle.x, obstacle.z);
       ctx.beginPath();
@@ -479,7 +671,7 @@ function drawMap() {
     }
   ctx.fill();
   ctx.stroke();
-  ctx.fillStyle = "#e5b068";
+  ctx.fillStyle = "#c7b086";
   ctx.beginPath();
   for (const flight of world.airShots)
     if (flight.time >= 0) {
@@ -489,7 +681,7 @@ function drawMap() {
     }
   ctx.fill();
   ctx.stroke();
-  ctx.fillStyle = "#bd7b44";
+  ctx.fillStyle = "#a08c67";
   ctx.strokeStyle = "#fbf7e6";
   ctx.lineWidth = 1.5;
   for (const depot of world.depots) {
@@ -499,12 +691,12 @@ function drawMap() {
   }
   for (const npc of world.golfers) {
     const p = map(npc.origin.x, 4);
-    ctx.fillStyle = npc.status === "empty" ? "#9aa58c" : "#557749";
+    ctx.fillStyle = npc.status === "empty" ? "#73816d" : "#c0c7ac";
     ctx.fillRect(p.x - 3, p.y - 3, 6, 5);
   }
   if (world.helper) {
     const p = map(world.helper.object.position.x, world.helper.object.position.z);
-    ctx.fillStyle = "#3f7f8c";
+    ctx.fillStyle = "#8fa9a6";
     ctx.beginPath();
     ctx.arc(p.x, p.y, 6, 0, Math.PI * 2);
     ctx.fill();
@@ -514,12 +706,12 @@ function drawMap() {
   const cart = map(world.tractor.position.x, world.tractor.position.z);
   ctx.save();
   ctx.translate(cart.x, cart.y);
-  ctx.fillStyle = "#ff9a3c40";
+  ctx.fillStyle = "#d6c49a25";
   ctx.beginPath();
   ctx.arc(0, 0, 20, 0, Math.PI * 2);
   ctx.fill();
   ctx.rotate(-world.tractorAngle);
-  ctx.fillStyle = "#ff8f2e";
+  ctx.fillStyle = "#d6c49a";
   ctx.strokeStyle = "#fffdf5";
   ctx.lineWidth = 3;
   ctx.lineJoin = "round";
@@ -540,24 +732,29 @@ function clearControls() {
   document.querySelectorAll(".held").forEach((e) => e.classList.remove("held"));
 }
 function pause() {
-  if (!state.started) return;
+  if (!state.started || state.over) return;
   state.paused = !state.paused;
   clearControls();
   const menu = $<HTMLDialogElement>("#pause-overlay");
-  if (state.paused) menu.showModal();
-  else menu.close();
+  if (state.paused) { menu.showModal(); world.looking = false; autosave(); }
+  else { claimAutosave(); menu.close(); }
   $("#pause").setAttribute("aria-expanded", String(state.paused));
   if (state.paused) $("#resume").focus();
   else $("#pause").focus();
 }
 
 function openDialog(html: string) {
+  saveDialogOpen = false;
+  dialog.classList.remove("saves-dialog");
   clearControls();
   $("#dialog-content").innerHTML = html;
   dialog.showModal();
 }
 function closeDialog() {
   dialog.close();
+  saveDialogOpen = false;
+  saveConfirmation = null;
+  dialog.classList.remove("saves-dialog");
   clearControls();
   lastTime = performance.now();
 }
@@ -591,7 +788,13 @@ $("#start").addEventListener("click", () => {
   lastTime = performance.now();
   audio.unlock();
   audio.setEnabled(audio.enabled);
+  claimAutosave();
+  autosave(true);
 });
+$("#continue-shift").addEventListener("click", () => { openSaves(); loadSave("autosave"); });
+$("#welcome-saves").addEventListener("click", openSaves);
+$("#saved-games").addEventListener("click", openSaves);
+$("#ended-saves").addEventListener("click", openSaves);
 $("#unload").addEventListener("click", unload);
 $("#shop-toggle").addEventListener("click", () => toggleShop());
 $("#shop-close").addEventListener("click", () => toggleShop(false));
@@ -599,7 +802,12 @@ $("#shop-list").addEventListener("click", (e) => {
   const button = (e.target as Element).closest<HTMLButtonElement>("[data-buy]");
   if (button && !button.disabled) buy(button.dataset.buy as UpgradeId);
 });
-$("#restart").addEventListener("click", () => location.reload());
+$("#restart").addEventListener("click", () => {
+  try { saves.remove("autosave"); }
+  catch (error) { showNotice(error instanceof Error ? error.message : "Saved games could not be updated.", "Named saves are kept.", true); return; }
+  suppressPageSave = true;
+  location.reload();
+});
 $("#recover").addEventListener("click", recover);
 $("#camera").addEventListener("click", changeCamera);
 $("#pause").addEventListener("click", pause);
@@ -616,12 +824,12 @@ $("#sound").addEventListener("click", () => {
 });
 $("#help").addEventListener("click", () =>
   openDialog(
-    `<span class="eyebrow">KEEP THE RANGE RUNNING</span><h2>Your shift, explained.</h2><div class="help-step"><span>01</span><div><strong>Collect and return.</strong><p><kbd>W A S D</kbd> or arrow keys drive. <kbd>Space</kbd> brakes. Drive over white balls to fill your 100-ball hopper. Stop at the orange depot and press <kbd>E</kbd> to return them.</p></div></div><div class="help-step"><span>02</span><div><strong>Keep your golfers supplied.</strong><p>Seven golfers keep hitting while the depot has balls. Empty supply stops their swings and makes them lose patience. Returning a load replenishes the supply and helps them recover.</p></div></div><div class="help-step"><span>03</span><div><strong>Protect your load.</strong><p>Hit a tree, rock, log, fence, sign, or wildlife and <b>50%</b> of your current load spills out. A flying golf ball hitting the cart spills <b>15%</b>. Losses round up to whole balls. Spilled balls bounce onto the range for you to collect again.</p></div></div><div class="help-step"><span>04</span><div><strong>Earn and upgrade.</strong><p>Every ball a golfer hits pays you, and happy golfers tip. Park at the depot and press <kbd>B</kbd> for the shop: engine, hopper, collector width, cage, bumper, range length, more bays, bay dispensers, a second depot, obstacle clearing, nets, or a driverless helper cart. The range starts at 100 yards with slow, patient hitters. Each extra 50 yards speeds the golfers up, reveals more hazards, and from 200 yards brings grinders, from 250 pros. Golfers whose patience hits zero walk out, and how happy the rest are decides who shows up next. If every bay sits empty for 30 seconds, the shift is over and your earnings are the score.</p></div></div><div class="help-step"><span>05</span><div><strong>Find your way.</strong><p>The map stays in the bottom right. Drag with the mouse to look around the cart and scroll to zoom. <kbd>C</kbd> changes camera, <kbd>Esc</kbd> or <kbd>P</kbd> opens the menu, and <kbd>R</kbd> recovers your cart. Touch arrows and the square brake button are available on smaller screens.</p></div></div><button data-action="close" class="primary-button">Back to menu ${icon("arrow", 18)}</button>`,
+    `<span class="eyebrow">KEEP THE RANGE RUNNING</span><h2>Your shift, explained.</h2><div class="help-step"><span>01</span><div><strong>Collect and return.</strong><p><kbd>W A S D</kbd> or arrow keys drive. <kbd>Space</kbd> brakes. Drive over white balls to fill your 75-ball hopper. A full hopper turns on the rotating roof beacon. Stop at the orange depot and press <kbd>E</kbd> to return them. Deliver a completely full hopper and you pocket a <b>$5</b> bonus.</p></div></div><div class="help-step"><span>02</span><div><strong>Keep your golfers supplied.</strong><p>Supply starts at 50 balls. Seven golfers keep hitting while the depot has balls, faster when supply is high and slower when it is low. Empty supply stops their swings and makes them lose patience. Returning a load replenishes the supply and helps them recover.</p></div></div><div class="help-step"><span>03</span><div><strong>Protect your load.</strong><p>Hit a tree, rock, log, fence, sign, or wildlife and <b>50%</b> of your current load spills out. A flying golf ball hitting the cart spills <b>15%</b>. Losses round up to whole balls. Spilled balls bounce onto the range for you to collect again. Sand traps slow the cart by <b>30%</b> until you drive back onto grass.</p></div></div><div class="help-step"><span>04</span><div><strong>Earn and upgrade.</strong><p>Every ball a golfer hits pays you, and happy golfers tip. Park at the depot and press <kbd>B</kbd> for the shop: engine, hopper, collector width, cage, bumper, range length, more bays, bay dispensers, a second depot, obstacle clearing, nets, or a driverless helper cart. The range starts at 100 yards with slow, patient hitters. Each extra 50 yards speeds the golfers up, reveals more hazards, and from 200 yards brings grinders, from 250 pros. Golfers whose patience hits zero walk out, and how happy the rest are decides who shows up next. If every bay sits empty for 30 seconds, the shift is over and your earnings are the score.</p></div></div><div class="help-step"><span>05</span><div><strong>Find your way.</strong><p>The map stays in the bottom right. Drag with the mouse to look around the cart and scroll to zoom. <kbd>C</kbd> changes camera, <kbd>Esc</kbd> or <kbd>P</kbd> opens the menu, and <kbd>R</kbd> recovers your cart. Touch arrows and the square brake button are available on smaller screens.</p></div></div><button data-action="close" class="primary-button">Back to menu ${icon("arrow", 18)}</button>`,
   ),
 );
 $("#settings").addEventListener("click", () =>
   openDialog(
-    `<span class="eyebrow">MAKE YOURSELF AT HOME</span><h2>Range settings.</h2><div class="setting-row"><div><label for="wind-setting">Wind</label><span>Changes the golfers’ ball flight.</span></div><select id="wind-setting"><option value="breeze" ${state.wind ? "selected" : ""}>Light breeze</option><option value="calm" ${!state.wind ? "selected" : ""}>Calm</option></select></div><div class="setting-row"><div><label for="quality-setting">Graphics</label><span>Lower detail for a smoother shift.</span></div><select id="quality-setting"><option value="high" ${world.quality === "high" ? "selected" : ""}>High</option><option value="low" ${world.quality === "low" ? "selected" : ""}>Low</option></select></div><div class="setting-row"><div><strong>Sound</strong><span>Quiet ambience and collision feedback.</span></div><button data-action="sound" class="setting-toggle">${audio.enabled ? "On" : "Off"}</button></div><p class="settings-note">The simulation pauses while this window is open. Preferences are saved on this device.</p><button data-action="close" class="primary-button">Done ${icon("check", 18)}</button>`,
+    `<span class="eyebrow">SIMULATION PREFERENCES</span><h2>Range settings.</h2><div class="setting-row"><div><label for="wind-setting">Wind</label><span>Changes the golfers’ ball flight.</span></div><select id="wind-setting"><option value="breeze" ${state.wind ? "selected" : ""}>Light breeze</option><option value="calm" ${!state.wind ? "selected" : ""}>Calm</option></select></div><div class="setting-row"><div><label for="quality-setting">Graphics</label><span>Lower detail for a smoother shift.</span></div><select id="quality-setting"><option value="high" ${world.quality === "high" ? "selected" : ""}>High</option><option value="low" ${world.quality === "low" ? "selected" : ""}>Low</option></select></div><div class="setting-row"><div><strong>Sound</strong><span>Quiet ambience and collision feedback.</span></div><button data-action="sound" class="setting-toggle">${audio.enabled ? "On" : "Off"}</button></div><p class="settings-note">The simulation pauses while this window is open. Preferences are saved on this device.</p><button data-action="close" class="primary-button">Done ${icon("check", 18)}</button>`,
   ),
 );
 $("#dialog-close").addEventListener("click", closeDialog);
@@ -642,6 +850,28 @@ dialog.addEventListener("click", (e) => {
   }
 });
 $("#dialog-content").addEventListener("click", (e) => {
+  const saveButton = (e.target as Element).closest<HTMLButtonElement>("[data-save-action]");
+  if (saveButton && !saveButton.disabled) {
+    const action = saveButton.dataset.saveAction!, id = saveButton.dataset.saveId;
+    if (action === "cancel") { saveConfirmation = null; renderSaves(); return; }
+    if (id && ["load", "overwrite", "delete"].includes(action)) {
+      if (action === "load" && !state.started) { loadSave(id); return; }
+      saveConfirmation = { action: action as "load" | "overwrite" | "delete", id };
+      renderSaves();
+      return;
+    }
+    if (id && action.startsWith("confirm-") && saveConfirmation?.id === id && action === `confirm-${saveConfirmation.action}`) {
+      if (action === "confirm-load") { loadSave(id); return; }
+      try {
+        if (action === "confirm-delete") saves.remove(id);
+        else if (action === "confirm-overwrite" && state.started) saves.overwrite(id, exportSave(), saveSummary());
+        saveConfirmation = null;
+        renderSaves(action === "confirm-delete" ? "Save deleted." : "Named save updated.");
+        updateWelcomeSaves();
+      } catch (error) { renderSaves(error instanceof Error ? error.message : "The save could not be updated."); }
+      return;
+    }
+  }
   const button = (e.target as Element).closest<HTMLButtonElement>(
     "[data-action]",
   );
@@ -651,10 +881,23 @@ $("#dialog-content").addEventListener("click", (e) => {
     button.textContent = audio.enabled ? "On" : "Off";
   }
 });
+$("#dialog-content").addEventListener("submit", (e) => {
+  if (!(e.target instanceof HTMLFormElement) || e.target.id !== "save-form") return;
+  e.preventDefault();
+  if (!state.started) return;
+  const input = $<HTMLInputElement>("#save-name");
+  try {
+    const saved = saves.saveNamed(input.value, exportSave(), saveSummary());
+    input.value = "";
+    saveConfirmation = null;
+    renderSaves(`“${saved.name}” saved. You can return to it from this menu.`);
+  } catch (error) { renderSaves(error instanceof Error ? error.message : "The game could not be saved."); }
+});
 $("#dialog-content").addEventListener("change", (e) => {
   const input = e.target as HTMLSelectElement;
   if (input.id === "wind-setting") {
     state.wind = input.value === "calm" ? 0 : 1.8;
+    world.setWind(state.wind);
     storage.set("wind", input.value);
   }
   if (input.id === "quality-setting") {
@@ -737,8 +980,17 @@ range.addEventListener(
 window.addEventListener("blur", clearControls);
 document.addEventListener("visibilitychange", () => {
   clearControls();
+  if (document.hidden && state.started && !state.paused && !state.over) pause();
+  else if (document.hidden) autosave();
   lastTime = performance.now();
 });
+window.addEventListener("pagehide", () => autosave());
+window.addEventListener("storage", event => {
+  if (event.key !== ACTIVE_SHIFT_KEY || !state.started) return;
+  if (!state.paused && !state.over) pause();
+  else saveMessage("Another tab owns the automatic save. Resume here to save this shift automatically.");
+});
+window.setInterval(() => autosave(), 30_000);
 window.addEventListener("resize", () => world?.resize());
 
 function animate(now: number) {
@@ -815,6 +1067,7 @@ async function init() {
     });
     state.ready = true;
     world.setQuality(storage.get("quality", "high") === "low" ? "low" : "high");
+    world.setWind(state.wind);
     applyUpgrades();
     world.syncGolfers(sim.golfers);
     const best = Number(storage.get("best", "0"));
@@ -823,16 +1076,25 @@ async function init() {
       $("#best-score").hidden = false;
     }
     updateHUD();
+    // Paint the completed scene immediately after asynchronous model/texture
+    // compilation, including when the browser throttles background frames.
+    world.update(0);
     $("#loading-label").textContent = "Start your shift";
     $("#loading-caption").textContent =
       "WASD to drive · Space to brake · E to return";
     $<HTMLButtonElement>("#start").disabled = false;
+    updateWelcomeSaves();
     Object.defineProperty(window, "rangeSimulator", {
       value: {
         sim,
         world,
         buy,
         applyUpgrades,
+        saves,
+        saveNow: () => autosave(),
+        ownsAutosave: () => saveOwnership.owns(),
+        loadSave,
+        exportSave,
         snapshot: () => ({
           ready: state.ready,
           started: state.started,
@@ -853,6 +1115,12 @@ async function init() {
           levels: { ...sim.levels },
           walkouts: sim.walkouts,
           arrivals: sim.arrivals,
+          visitorCarts: world.golfCarts.map(cart => ({
+            golfer: cart.object.userData.golferId,
+            phase: cart.phase,
+            driverVisible: cart.driver.visible,
+            position: cart.object.position.toArray(),
+          })),
           over: sim.over,
           waiting: sim.waiting,
           golfers: sim.golfers.map((g) => ({ ...g })),

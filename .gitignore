@@ -6,3 +6,5 @@ dist/
 assets/BUILD_COMPLETE.json
 assets/EXPORT_COMPLETE.json
 assets/BUILD_ERROR.txt
+exports/*.zip
+__pycache__/
