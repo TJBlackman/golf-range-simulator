@@ -812,8 +812,8 @@ function updateSound() {
 }
 updateSound();
 
-$("#start").addEventListener("click", () => {
-  if (!state.ready) return;
+function startShift() {
+  if (!state.ready || state.started) return;
   state.started = true;
   $(".game").classList.add("playing");
   $("#loading-screen").hidden = true;
@@ -822,7 +822,8 @@ $("#start").addEventListener("click", () => {
   audio.setEnabled(audio.enabled);
   claimAutosave();
   autosave(true);
-});
+}
+$("#start").addEventListener("click", startShift);
 $("#continue-shift").addEventListener("click", () => { openSaves(); loadSave("autosave"); });
 $("#welcome-saves").addEventListener("click", openSaves);
 $("#saved-games").addEventListener("click", openSaves);
@@ -959,7 +960,7 @@ for (const button of document.querySelectorAll<HTMLButtonElement>(
   button.addEventListener("lostpointercapture", release);
 }
 window.addEventListener("keydown", (e) => {
-  if (!state.started || dialog.open || e.ctrlKey || e.metaKey || e.altKey)
+  if (dialog.open || e.ctrlKey || e.metaKey || e.altKey)
     return;
   if (
     e.target instanceof HTMLElement &&
@@ -967,6 +968,10 @@ window.addEventListener("keydown", (e) => {
   )
     return;
   const key = e.key.toLowerCase();
+  if (!state.started) {
+    if (!state.ready || (key !== "w" && key !== "arrowup")) return;
+    startShift();
+  }
   if ((key === "p" || key === "escape") && !e.repeat) {
     e.preventDefault();
     pause();
@@ -1115,7 +1120,7 @@ async function init() {
     world.update(0);
     $("#loading-label").textContent = "Start your shift";
     $("#loading-caption").textContent =
-      "WASD to drive · Space to brake · E to return";
+      "W / ↑ to start & drive · Space to brake · E to return";
     $<HTMLButtonElement>("#start").disabled = false;
     updateWelcomeSaves();
     Object.defineProperty(window, "rangeSimulator", {
