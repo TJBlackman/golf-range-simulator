@@ -126,8 +126,11 @@ type Walk = {
 };
 type NPC = {
   object: THREE.Group;
+  /** The hitting bay this golfer plays from. Mirrored on X for a left hander. */
+  bay: THREE.Group;
   mixer: THREE.AnimationMixer;
   swing: THREE.AnimationAction;
+  /** Where the ball sits on the tee. Moves with the bay when it is mirrored. */
   origin: Point;
   mood: THREE.Sprite;
   moodKey: string;
@@ -219,7 +222,6 @@ export class RangeScene {
   rangeEnd = TEE.z + 100 * YARD;
   private helperRoute = helperRoute(this.rangeEnd);
   private ground!: THREE.Group;
-  private bayObjects: THREE.Group[] = [];
   private secondDepot?: { object: THREE.Group; label: THREE.Sprite };
   private fenceMeshes: THREE.Object3D[] = [];
   private targetGroups: THREE.Group[] = [];
@@ -552,16 +554,22 @@ export class RangeScene {
     this.collectorRoller = tractorModel.getObjectByName("CollectorRoller");
   }
 
+  /** World position of the bay's tee, read from the model's anchor so it follows a mirrored bay. */
+  private teeOrigin(bay: THREE.Group): Point {
+    bay.updateMatrixWorld(true);
+    const anchor = bay.getObjectByName("BallLaunchAnchor");
+    const origin = anchor
+      ? anchor.getWorldPosition(new THREE.Vector3())
+      : new THREE.Vector3(bay.position.x + TEE.x, TEE.y, TEE.z);
+    return { x: origin.x, y: TEE.y, z: origin.z };
+  }
+
   private addBay(index: number) {
     const x = BAY_X[index];
+    // Bays open right-handed: divider and roof post on the -X side, tee beside them,
+    // dispenser button on the open +X side. A left hander mirrors the whole bay.
     const bay = this.asset("hitting-bay", x, 4);
-    this.bayObjects.push(bay);
-    const originNode = bay.getObjectByName("BallLaunchAnchor");
-    bay.updateMatrixWorld(true);
-    const origin = originNode
-      ? originNode.getWorldPosition(new THREE.Vector3())
-      : new THREE.Vector3(x + TEE.x, TEE.y, TEE.z);
-    origin.y = TEE.y;
+    const origin = this.teeOrigin(bay);
     // Local +X is the lead (left) shoulder. Face across the tee so that
     // shoulder and the right-handed follow-through point down range (+Z).
     const object = this.asset("golfer", origin.x + GOLFER_ADDRESS_REACH, origin.z, GOLFER_SCALE);
@@ -591,9 +599,10 @@ export class RangeScene {
     mood.visible = false;
     const npc: NPC = {
       object,
+      bay,
       mixer,
       swing,
-      origin: { x: origin.x, y: origin.y, z: origin.z },
+      origin,
       mood,
       moodKey: "",
       type: "casual",
@@ -610,7 +619,7 @@ export class RangeScene {
   setBays(count: number) {
     while (this.golfers.length > count) {
       const npc = this.golfers.pop()!;
-      this.scene.remove(npc.object, npc.mood, this.bayObjects.pop()!);
+      this.scene.remove(npc.object, npc.mood, npc.bay);
       (npc.mood.material as THREE.SpriteMaterial).map?.dispose();
       npc.mood.material.dispose();
       npc.polo?.dispose();
@@ -1386,8 +1395,8 @@ export class RangeScene {
         if (driverPolo?.material instanceof THREE.MeshStandardMaterial)
           driverPolo.material.color.set(GOLFER_TYPES[state.type].color);
       }
-      if (state.status !== npc.status) this.transitionGolfer(npc, state);
       if (state.leftHanded !== npc.leftHanded) this.setHandedness(npc, state.leftHanded);
+      if (state.status !== npc.status) this.transitionGolfer(npc, state);
       if (state.status === "empty") {
         // Keep floating-point noise from showing 16s at the start of a 15s cooldown.
         const seconds = Math.max(0, Math.ceil(state.cooldownUntil - time - 1e-9));
@@ -1420,9 +1429,13 @@ export class RangeScene {
     }
   }
 
-  /** Mirror the right-handed rig so the swing plays the other way, and move to the far side of the tee. */
+  /** Turn the bay into a left-handed bay (or back): mirror the whole bay on X so the
+   *  divider, roof post, tee, and dispenser swap sides, then mirror the right-handed
+   *  rig so the swing plays the other way and stand it on the far side of the moved tee. */
   private setHandedness(npc: NPC, leftHanded: boolean) {
     npc.leftHanded = leftHanded;
+    npc.bay.scale.x = leftHanded ? -1 : 1;
+    npc.origin = this.teeOrigin(npc.bay);
     npc.object.scale.x = (leftHanded ? -1 : 1) * GOLFER_SCALE;
     if (npc.status === "playing" && !npc.walk && npc.object.visible) {
       npc.object.position.x = stanceX(npc);
@@ -1497,7 +1510,7 @@ export class RangeScene {
   /** Each occupied bay keeps its visitor's resort cart parked behind it. */
   private createVisitorCart(npc: NPC, index: number, arriving: boolean): VisitorCart {
     const model = createGolfCart(CART_COLORS[index % CART_COLORS.length], GOLFER_TYPES[npc.type].color);
-    const park = new THREE.Vector3(npc.origin.x + GOLFER_ADDRESS_REACH, 0.02, -4.6);
+    const park = new THREE.Vector3(stanceX(npc), 0.02, -4.6);
     const cart: VisitorCart = {
       ...model, npc, park, phase: arriving ? "arriving" : "parked",
       start: this.elapsed, legs: [],
