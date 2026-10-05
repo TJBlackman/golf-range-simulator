@@ -10,6 +10,8 @@ export const GAME_OVER_SECONDS = 30;
 export const TIP_STREAK = 10;
 export const STOCK_BUNDLE = 50;
 export const WALKOUT_SECONDS = 4;
+/** A vacated bay must stay empty for this long before another visitor arrives. */
+export const BAY_COOLDOWN_SECONDS = 15;
 /** Drive in, park, and walk to the mat before taking the first shot. */
 export const ARRIVAL_READY_SECONDS = 8.25;
 /** Seconds after the shift opens before the first cart of the opening lineup rolls in, as a random range. */
@@ -116,7 +118,16 @@ export type GolferState = {
   buffer: number;
   /** Leaving: when the walkout ends. Empty: when the next golfer arrives. */
   until: number;
+  /** Simulation time when a vacated bay can accept another golfer. */
+  cooldownUntil: number;
 };
+export type GolferMood = "happy" | "waiting" | "mad" | "furious";
+
+export function getGolferMood(golfer: Pick<GolferState, "status" | "patience" | "waiting">): GolferMood {
+  if (golfer.status === "leaving" || golfer.patience <= 15) return "furious";
+  if (golfer.patience < 35 || (!golfer.waiting && golfer.patience < 70)) return "mad";
+  return golfer.waiting ? "waiting" : "happy";
+}
 export type ShotOrder = { golfer: number; number: number; lost: boolean };
 export type SimEvent =
   | { kind: "walkout" | "arrival"; golfer: number; type: GolferType }
@@ -354,6 +365,7 @@ export function validateManagementSnapshot(input: unknown): ManagementSnapshot {
       nextShot: number(saved.nextShot), shots: number(saved.shots, 1e12, true),
       streak: number(saved.streak, 1e12, true), buffer: number(saved.buffer, DISPENSER_BUFFERS[levels.dispensers], true),
       until: number(saved.until),
+      cooldownUntil: saved.cooldownUntil === undefined ? 0 : number(saved.cooldownUntil),
     };
   });
   if (!Array.isArray(source.events) || source.events.length > 1000) throw new Error("The saved event queue is invalid.");
@@ -424,6 +436,7 @@ export class RangeManagement {
     streak: 0,
     buffer: 0,
     until: 0,
+    cooldownUntil: 0,
   }));
   private events: SimEvent[] = [];
 
@@ -548,12 +561,13 @@ export class RangeManagement {
       if (golfer.status === "leaving") {
         if (this.time >= golfer.until) {
           golfer.status = "empty";
-          golfer.until = this.time + this.arrivalDelay();
+          golfer.cooldownUntil = this.time + BAY_COOLDOWN_SECONDS;
+          golfer.until = Math.max(golfer.cooldownUntil, this.time + this.arrivalDelay());
         }
         continue;
       }
       if (golfer.status === "empty") {
-        if (this.stars >= 1 && this.time >= golfer.until) this.arrive(golfer);
+        if (this.stars >= 1 && this.time >= golfer.until && this.time >= golfer.cooldownUntil) this.arrive(golfer);
         continue;
       }
       const profile = GOLFER_TYPES[golfer.type];
@@ -638,6 +652,7 @@ export class RangeManagement {
     golfer.booked = false;
     if (!booked) golfer.type = this.pickType();
     golfer.status = "playing";
+    golfer.cooldownUntil = 0;
     golfer.leftHanded = this.rollHandedness();
     golfer.patience = 100;
     golfer.waiting = false;
@@ -705,6 +720,7 @@ export class RangeManagement {
         streak: 0,
         buffer: 0,
         until: this.time + 3,
+        cooldownUntil: 0,
       });
   }
 
