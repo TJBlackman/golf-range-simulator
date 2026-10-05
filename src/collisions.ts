@@ -1,6 +1,11 @@
 import type { Point } from "./physics.ts";
 
 export type Position2 = { x: number; z: number };
+export type VehiclePose = Position2 & { angle: number };
+/** Collector bounds in the cart's local coordinates, including its wings. */
+export type CollectorBounds = {
+  minX: number; maxX: number; minZ: number; maxZ: number;
+};
 type BaseObstacle = { id: string; name: string };
 export type Obstacle = BaseObstacle &
   (
@@ -90,6 +95,108 @@ export function resolveMove(
     }
   }
   return { position, hit };
+}
+
+/** Signed clearance and the direction that moves the collector out of an obstacle. */
+function collectorContact(
+  cart: VehiclePose,
+  bounds: CollectorBounds,
+  obstacle: Obstacle,
+): { distance: number; normal: Position2 } {
+  const c = Math.cos(cart.angle), s = Math.sin(cart.angle);
+  const worldNormal = (x: number, z: number) => ({ x: c * x + s * z, z: -s * x + c * z });
+  if (obstacle.kind === "circle") {
+    const dx = obstacle.x - cart.x, dz = obstacle.z - cart.z;
+    const x = c * dx - s * dz, z = s * dx + c * dz;
+    const nx = clamp(x, bounds.minX, bounds.maxX) - x;
+    const nz = clamp(z, bounds.minZ, bounds.maxZ) - z;
+    const length = Math.hypot(nx, nz);
+    if (length > 1e-8)
+      return { distance: length - obstacle.radius, normal: worldNormal(nx / length, nz / length) };
+    const sides = [
+      { distance: x - bounds.minX, normal: worldNormal(1, 0) },
+      { distance: bounds.maxX - x, normal: worldNormal(-1, 0) },
+      { distance: z - bounds.minZ, normal: worldNormal(0, 1) },
+      { distance: bounds.maxZ - z, normal: worldNormal(0, -1) },
+    ].sort((a, b) => a.distance - b.distance);
+    return { distance: -sides[0].distance - obstacle.radius, normal: sides[0].normal };
+  }
+
+  // Separating axes for the rotated collector and the world-aligned obstacle.
+  const localX = { x: c, z: -s }, localZ = { x: s, z: c };
+  const halfX = (bounds.maxX - bounds.minX) / 2, halfZ = (bounds.maxZ - bounds.minZ) / 2;
+  const offset = worldNormal((bounds.minX + bounds.maxX) / 2, (bounds.minZ + bounds.maxZ) / 2);
+  const dx = cart.x + offset.x - (obstacle.minX + obstacle.maxX) / 2;
+  const dz = cart.z + offset.z - (obstacle.minZ + obstacle.maxZ) / 2;
+  const obstacleHalfX = (obstacle.maxX - obstacle.minX) / 2;
+  const obstacleHalfZ = (obstacle.maxZ - obstacle.minZ) / 2;
+  let distance = -Infinity, normal = { x: 0, z: 0 };
+  for (const axis of [{ x: 1, z: 0 }, { x: 0, z: 1 }, localX, localZ]) {
+    const center = dx * axis.x + dz * axis.z;
+    const extent = halfX * Math.abs(localX.x * axis.x + localX.z * axis.z) +
+      halfZ * Math.abs(localZ.x * axis.x + localZ.z * axis.z) +
+      obstacleHalfX * Math.abs(axis.x) + obstacleHalfZ * Math.abs(axis.z);
+    const separation = Math.abs(center) - extent;
+    if (separation > distance) {
+      distance = separation;
+      const sign = center < 0 ? -1 : 1;
+      normal = { x: axis.x * sign, z: axis.z * sign };
+    }
+  }
+  return { distance, normal };
+}
+
+/** Clearance of the whole vehicle, used to keep an impact latched until it moves away. */
+export function vehicleObstacleDistance(
+  cart: VehiclePose,
+  obstacle: Obstacle,
+  collector?: CollectorBounds,
+): number {
+  const bodyDistance = obstacleDistance(cart, obstacle) - VEHICLE_RADIUS;
+  return collector
+    ? Math.min(bodyDistance, collectorContact(cart, collector, obstacle).distance)
+    : bodyDistance;
+}
+
+/** Resolve both the cart body and its rotating collector, sweeping movement and steering. */
+export function resolveVehicleMove(
+  previous: VehiclePose,
+  next: VehiclePose,
+  obstacles: Obstacle[],
+  collector?: CollectorBounds,
+): { position: Position2; angle: number; hit?: Obstacle } {
+  if (!collector) return { ...resolveMove(previous, next, obstacles), angle: next.angle };
+  const dx = next.x - previous.x, dz = next.z - previous.z;
+  const turn = next.angle - previous.angle;
+  const reach = Math.hypot(
+    Math.max(Math.abs(collector.minX), Math.abs(collector.maxX)),
+    Math.max(Math.abs(collector.minZ), Math.abs(collector.maxZ)),
+  );
+  // Keep even a thin collector from skipping a tree or fence between frames.
+  const steps = Math.max(1, Math.ceil((Math.hypot(dx, dz) + Math.abs(turn) * reach) / 0.2));
+  let position: Position2 = { x: previous.x, z: previous.z };
+  for (let step = 1; step <= steps; step++) {
+    const angle = previous.angle + turn * step / steps;
+    position = { x: position.x + dx / steps, z: position.z + dz / steps };
+    let hit: Obstacle | undefined;
+    for (let pass = 0; pass < 3; pass++) {
+      const body = resolveMove(previous, position, obstacles);
+      position = body.position;
+      hit ??= body.hit;
+      let collectorMoved = false;
+      for (const obstacle of obstacles) {
+        const contact = collectorContact({ ...position, angle }, collector, obstacle);
+        if (contact.distance >= 0) continue;
+        hit ??= obstacle;
+        collectorMoved = true;
+        position.x += contact.normal.x * (-contact.distance + 0.001);
+        position.z += contact.normal.z * (-contact.distance + 0.001);
+      }
+      if (!collectorMoved) break;
+    }
+    if (hit) return { position, angle, hit };
+  }
+  return { position, angle: next.angle };
 }
 
 // Sweep the entire ball movement through the rotated cart, so fast shots cannot tunnel through it.
