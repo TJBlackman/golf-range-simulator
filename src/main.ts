@@ -2,7 +2,7 @@ import "@fontsource-variable/dm-sans";
 import "@fontsource-variable/fraunces";
 import "@fontsource-variable/fraunces/wght-italic.css";
 import "./style.css";
-import { RangeScene } from "./scene";
+import { FRONT_BOUNDARY, RangeScene } from "./scene";
 import { RangeAudio } from "./audio";
 import {
   RangeManagement,
@@ -664,6 +664,14 @@ function drawMap() {
       ctx.fillRect(a.x, a.y, Math.max(3, b.x - a.x), Math.max(3, b.y - a.y));
     }
   }
+  const boundaryLeft = map(FRONT_BOUNDARY.maxX, FRONT_BOUNDARY.z),
+    boundaryRight = map(FRONT_BOUNDARY.minX, FRONT_BOUNDARY.z);
+  ctx.strokeStyle = "#ffffff";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(boundaryLeft.x, boundaryLeft.y);
+  ctx.lineTo(boundaryRight.x, boundaryRight.y);
+  ctx.stroke();
   // Balls: outlined white dots drawn as one path so hundreds stay cheap.
   ctx.fillStyle = "#fffef4";
   ctx.strokeStyle = "#2c4633";
