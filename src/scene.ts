@@ -20,7 +20,7 @@ import {
   VEHICLE_RADIUS,
 } from "./collisions";
 import type { Obstacle } from "./collisions";
-import { GOLFER_TYPES, HOPPER_CAPACITIES } from "./management";
+import { GOLFER_TYPES, HOPPER_CAPACITIES, getGolferMood } from "./management";
 import { createGolfCart, disposeGolfCart } from "./golf-cart";
 import { validateWorldState } from "./world-state";
 import { RangeEnvironment } from "./environment";
@@ -28,6 +28,7 @@ import { HopperBeacon } from "./hopper-beacon";
 import { cartSpeedMultiplier, SAND_TRAP_OUTLINE, SAND_TRAP_ROTATION, SAND_TRAPS } from "./terrain";
 import type {
   GolferState,
+  GolferMood,
   GolferStatus,
   GolferType,
   ShotOrder,
@@ -90,6 +91,13 @@ const GOLFER_STANCE_ANGLE = -Math.PI / 2;
 const CART_ARRIVAL_SECONDS = 4.5;
 const BAY_WALK_SECONDS = 3.5;
 const SWING_SPEED = 1.8;
+const MOOD_ICONS: Record<GolferMood, { emoji: string; color: string; label: string }> = {
+  happy: { emoji: "😊", color: "#a7be79", label: "Happy" },
+  waiting: { emoji: "😴", color: "#e4ba72", label: "Waiting for balls" },
+  mad: { emoji: "😠", color: "#df8366", label: "Mad" },
+  furious: { emoji: "🤬", color: "#ff514c", label: "Furious — about to leave" },
+};
+const MOOD_ICON_SCALE = 0.03;
 /** Where a golfer stands to address the ball: trail side of the tee for their handedness. */
 const stanceX = (npc: { origin: Point; leftHanded: boolean }) =>
   npc.origin.x + (npc.leftHanded ? -GOLFER_ADDRESS_REACH : GOLFER_ADDRESS_REACH);
@@ -577,8 +585,7 @@ export class RangeScene {
     swing.clampWhenFinished = true;
     swing.play();
     swing.paused = true;
-    const mood = this.label("HAPPY", "#a7be79", "mood");
-    mood.position.set(x, 3.8, 4);
+    const mood = this.moodIcon("happy");
     this.scene.add(mood);
     object.visible = false;
     mood.visible = false;
@@ -1136,6 +1143,45 @@ export class RangeScene {
     return sprite;
   }
 
+  private moodIcon(mood: GolferMood) {
+    const { emoji, color, label } = MOOD_ICONS[mood];
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = 144;
+    const ctx = canvas.getContext("2d")!;
+    ctx.fillStyle = "#18241ee8";
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 5;
+    ctx.beginPath();
+    ctx.arc(72, 72, 65, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.font = '92px "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif';
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = "#ffffff";
+    ctx.fillText(emoji, 72, 76);
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: texture, transparent: true, depthTest: false, depthWrite: false,
+      toneMapped: false, sizeAttenuation: false,
+    }));
+    sprite.name = label;
+    sprite.userData = { mood, emoji };
+    sprite.scale.set(MOOD_ICON_SCALE, MOOD_ICON_SCALE, 1);
+    sprite.renderOrder = 20;
+    return sprite;
+  }
+
+  private replaceGolferLabel(npc: NPC, replacement: THREE.Sprite) {
+    (npc.mood.material as THREE.SpriteMaterial).map?.dispose();
+    npc.mood.material.dispose();
+    npc.mood.material = replacement.material;
+    npc.mood.scale.copy(replacement.scale);
+    npc.mood.name = replacement.name;
+    npc.mood.userData = replacement.userData;
+  }
+
   addFieldBall(point: Point, delay = 0, collectible = true) {
     if (this.balls.length > 1000) {
       const active = this.balls.filter((b) => b.active);
@@ -1329,7 +1375,7 @@ export class RangeScene {
     }
   }
 
-  syncGolfers(states: GolferState[]) {
+  syncGolfers(states: GolferState[], time: number) {
     for (const state of states) {
       const npc = this.golfers[state.id];
       if (!npc) continue;
@@ -1342,52 +1388,34 @@ export class RangeScene {
       }
       if (state.status !== npc.status) this.transitionGolfer(npc, state);
       if (state.leftHanded !== npc.leftHanded) this.setHandedness(npc, state.leftHanded);
-      if (state.status === "empty") continue;
-      const key =
-        state.status === "leaving"
-          ? "leaving"
-          : npc.cart?.phase === "arriving" || (npc.walk && !npc.walk.hide)
-            ? "arriving"
-          : state.waiting
-            ? state.patience < 35
-              ? "upset"
-              : "waiting"
-            : state.patience < 70
-              ? "impatient"
-              : "happy";
-      const moodKey = `${state.type}:${key}`;
-      if (npc.moodKey === moodKey) continue;
-      npc.moodKey = moodKey;
-      const text =
-        key === "arriving"
-          ? "ARRIVING"
-          : key === "waiting"
-          ? "NO BALLS"
-          : key === "upset"
-            ? "UPSET"
-            : key === "impatient"
-              ? "IMPATIENT"
-              : key === "leaving"
-                ? "LEAVING"
-                : "HAPPY";
-      const color =
-        key === "happy"
-          ? "#a7be79"
-          : key === "upset" || key === "leaving"
-            ? "#df8366"
-            : "#e4ba72";
-      const replacement = this.label(
-        text,
-        color,
-        "mood",
-        GOLFER_TYPES[state.type].name.toUpperCase(),
-      );
-      (npc.mood.material as THREE.SpriteMaterial).map?.dispose();
-      npc.mood.material.dispose();
-      npc.mood.material = replacement.material;
+      if (state.status === "empty") {
+        // Keep floating-point noise from showing 16s at the start of a 15s cooldown.
+        const seconds = Math.max(0, Math.ceil(state.cooldownUntil - time - 1e-9));
+        const key = seconds ? `cooldown:${seconds}` : "";
+        if (npc.moodKey !== key) {
+          npc.moodKey = key;
+          if (seconds) {
+            const cooldown = this.label(`${seconds}s`, "#e4ba72", "mood", "COOL DOWN");
+            cooldown.scale.set(2.8, 0.93, 1);
+            cooldown.material.depthTest = false;
+            cooldown.material.depthWrite = false;
+            cooldown.name = `Bay cooling down: ${seconds}s`;
+            cooldown.userData = { cooldown: seconds };
+            this.replaceGolferLabel(npc, cooldown);
+          }
+        }
+        npc.mood.visible = seconds > 0;
+        npc.mood.position.set(npc.origin.x, 3.8, npc.origin.z);
+        continue;
+      }
       if (state.waiting || state.status === "leaving") {
         npc.swing.reset().play();
         npc.swing.paused = true;
+      }
+      const key = getGolferMood(state);
+      if (npc.moodKey !== key) {
+        npc.moodKey = key;
+        this.replaceGolferLabel(npc, this.moodIcon(key));
       }
     }
   }
@@ -2067,6 +2095,14 @@ export class RangeScene {
     for (const animal of this.animals) this.wander(animal, dt);
     this.updateWalks();
     this.updateGolfCarts();
+    for (const npc of this.golfers) {
+      if (npc.status === "empty") continue;
+      npc.mood.visible = npc.object.visible;
+      npc.mood.position.copy(npc.object.position);
+      npc.mood.position.y += 2.7;
+      const pulse = npc.moodKey === "furious" ? 1 + Math.sin(this.elapsed * 7) * 0.1 : 1;
+      npc.mood.scale.set(MOOD_ICON_SCALE * pulse, MOOD_ICON_SCALE * pulse, 1);
+    }
     if (this.cameraMode === "overview") {
       const end = this.rangeEnd;
       this.targetCamera.set(end * 0.36, end * 0.6 + 20, -end * 0.2);

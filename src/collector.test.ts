@@ -14,6 +14,8 @@ import {
   FULL_LOAD_BONUS,
   GAME_OVER_SECONDS,
   WALKOUT_SECONDS,
+  BAY_COOLDOWN_SECONDS,
+  getGolferMood,
   ARRIVAL_READY_SECONDS,
   INITIAL_LINEUP,
   OPENING_FIRST_CART_SECONDS,
@@ -206,6 +208,90 @@ test("empty bays refill from the queue while the rating holds", () => {
   assert.equal(golfer.status, "playing");
   assert.equal(sim.arrivals, 1);
   assert.equal(sim.served, GOLFER_COUNT + 1);
+});
+
+test("golfer moods escalate before a walkout and recover when resupplied", () => {
+  const sim = new RangeManagement(seeded());
+  open(sim);
+  const golfer = sim.golfers[0];
+  assert.equal(getGolferMood(golfer), "happy");
+  sim.reserve = 0;
+  golfer.nextShot = sim.time;
+  sim.update(0.05);
+  assert.equal(getGolferMood(golfer), "waiting");
+  golfer.patience = 34;
+  assert.equal(getGolferMood(golfer), "mad");
+  golfer.patience = 15;
+  assert.equal(getGolferMood(golfer), "furious");
+  assert.equal(golfer.status, "playing");
+  golfer.patience = 0.01;
+  sim.update(0.05);
+  assert.equal(golfer.status, "leaving");
+  assert.equal(getGolferMood(golfer), "furious");
+
+  const waiting = sim.golfers[1];
+  waiting.waiting = true;
+  waiting.patience = 14;
+  assert.equal(getGolferMood(waiting), "furious");
+  waiting.nextShot = sim.time;
+  sim.collect(75);
+  sim.unload();
+  assert.equal(getGolferMood(waiting), "mad");
+  advance(sim, 30);
+  assert.equal(getGolferMood(waiting), "happy");
+});
+
+test("vacated bays cool down for 15 seconds even at the highest rating", () => {
+  const sim = new RangeManagement(seeded());
+  open(sim);
+  sim.reserve = 5000;
+  sim.reputation = 100;
+  const golfer = sim.golfers[0];
+  golfer.waiting = true;
+  golfer.patience = 0.01;
+  sim.update(0.05);
+  assert.equal(golfer.status, "leaving");
+  sim.update(golfer.until - sim.time);
+  assert.equal(golfer.status, "empty");
+  const vacatedAt = sim.time;
+  assert.equal(golfer.cooldownUntil, vacatedAt + BAY_COOLDOWN_SECONDS);
+  assert.equal(golfer.until, golfer.cooldownUntil);
+  assert.ok(sim.arrivalDelay() < BAY_COOLDOWN_SECONDS);
+  // A shorter queue timer must never bypass the independent cooldown guard.
+  golfer.until = sim.time;
+  sim.update(BAY_COOLDOWN_SECONDS - 0.01);
+  assert.equal(golfer.status, "empty");
+  assert.equal(sim.arrivals, 0);
+  sim.update(0.02);
+  assert.equal(golfer.status, "playing");
+  assert.equal(golfer.cooldownUntil, 0);
+  assert.equal(sim.arrivals, 1);
+});
+
+test("cooldowns do not shorten a slower arrival queue or delay newly opened bays", () => {
+  const sim = new RangeManagement(seeded());
+  open(sim);
+  sim.reserve = 5000;
+  const golfer = sim.golfers[0];
+  golfer.waiting = true;
+  golfer.patience = 0.01;
+  sim.update(0.05);
+  sim.reputation = 40;
+  const expectedDelay = sim.arrivalDelay();
+  assert.ok(expectedDelay > BAY_COOLDOWN_SECONDS);
+  sim.update(golfer.until - sim.time);
+  assert.equal(golfer.until, sim.time + expectedDelay);
+  sim.update(BAY_COOLDOWN_SECONDS);
+  assert.equal(golfer.status, "empty");
+  sim.update(golfer.until - sim.time);
+  assert.equal(golfer.status, "playing");
+
+  sim.cash = 10000;
+  sim.buy("bays");
+  const newBay = sim.golfers.at(-1)!;
+  assert.equal(newBay.cooldownUntil, 0);
+  sim.update(3.01);
+  assert.equal(newBay.status, "playing");
 });
 
 test("the opening lineup drives in one bay at a time and is on the mats about fifteen seconds in", () => {

@@ -331,7 +331,7 @@ function loadSave(id: string) {
     sim.restoreState(saved.payload.management);
     applyUpgrades();
     world.restoreState(saved.payload.world);
-    world.syncGolfers(sim.golfers);
+    world.syncGolfers(sim.golfers, sim.time);
     world.setHopper(sim.hopper);
   } catch (error) {
     try { sim.restoreState(previous.management); applyUpgrades(); world.restoreState(previous.world); }
@@ -1039,7 +1039,7 @@ function animate(now: number) {
         `${sim.supply} balls ready to hit.`,
       );
     }
-    world.syncGolfers(sim.golfers);
+    world.syncGolfers(sim.golfers, sim.time);
     handleEvents(now);
   }
   world.update(running ? dt : 0);
@@ -1069,7 +1069,7 @@ async function init() {
     world.setQuality(storage.get("quality", "high") === "low" ? "low" : "high");
     world.setWind(state.wind);
     applyUpgrades();
-    world.syncGolfers(sim.golfers);
+    world.syncGolfers(sim.golfers, sim.time);
     const best = Number(storage.get("best", "0"));
     if (best > 0) {
       $("#best-score").textContent = `Best shift so far: ${money(best)}`;
