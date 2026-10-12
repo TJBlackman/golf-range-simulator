@@ -41,6 +41,7 @@ export class SaveStore<T> {
   private readonly validate: (input: unknown) => T;
   private readonly now: () => number;
   private readonly createId: () => string;
+  private validatedAutosaveRaw: string | null = null;
   constructor(
     storage: SaveStorage,
     validate: (input: unknown) => T,
@@ -89,7 +90,13 @@ export class SaveStore<T> {
 
   read(id: string): SavedGame<T> | null {
     const raw = this.readRaw(id);
-    return raw === null ? null : this.decode(id, raw);
+    if (raw === null) {
+      if (id === "autosave") this.validatedAutosaveRaw = null;
+      return null;
+    }
+    const saved = this.decode(id, raw);
+    if (id === "autosave") this.validatedAutosaveRaw = raw;
+    return saved;
   }
 
   list(): SaveEntry[] {
@@ -119,11 +126,18 @@ export class SaveStore<T> {
     const saved = this.decode(id, raw);
     try { this.storage.setItem(this.key(id), raw); }
     catch (error) { throw this.storageError(error); }
+    if (id === "autosave") this.validatedAutosaveRaw = raw;
     return saved;
   }
 
   autosave(payload: T, summary: SaveSummary, replaceUnreadable = false) {
-    if (!replaceUnreadable) this.read("autosave");
+    if (!replaceUnreadable) {
+      // Keep checking storage for changes from another tab, but do not parse,
+      // validate and clone an unchanged save that this store already verified.
+      const raw = this.readRaw("autosave");
+      if (raw !== null && raw !== this.validatedAutosaveRaw) this.decode("autosave", raw);
+      this.validatedAutosaveRaw = raw;
+    }
     return this.write("autosave", "Automatic save", payload, summary);
   }
 
@@ -146,5 +160,6 @@ export class SaveStore<T> {
   remove(id: string) {
     try { this.storage.removeItem(this.key(id)); }
     catch (error) { throw this.storageError(error); }
+    if (id === "autosave") this.validatedAutosaveRaw = null;
   }
 }

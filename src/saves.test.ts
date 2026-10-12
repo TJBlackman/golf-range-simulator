@@ -195,6 +195,60 @@ test("a quota failure leaves both the previous autosave and named games intact",
   assert.equal(store.read(named.id)!.payload.cash, 20);
 });
 
+test("autosave reuses verification only while the stored serialized save is unchanged", () => {
+  const { memory, sim, summary } = fixture();
+  let validations = 0;
+  const store = new SaveStore(memory, input => {
+    validations++;
+    return validateManagementSnapshot(input);
+  }, () => 1000);
+  store.autosave(sim.exportState(), summary());
+  assert.equal(validations, 1);
+  sim.cash = 21;
+  store.autosave(sim.exportState(), summary());
+  assert.equal(validations, 2, "only the new serialized payload needs validation");
+
+  const changed = JSON.parse(memory.getItem(SAVE_PREFIX + "autosave")!);
+  changed.payload.cash = 22;
+  memory.setItem(SAVE_PREFIX + "autosave", JSON.stringify(changed));
+  store.autosave(sim.exportState(), summary());
+  assert.equal(validations, 4, "external changes require old and new payload validation");
+
+  memory.removeItem(SAVE_PREFIX + "autosave");
+  store.autosave(sim.exportState(), summary());
+  assert.equal(validations, 5, "a removed save is recreated without decoding a missing value");
+  memory.setItem(SAVE_PREFIX + "autosave", "{damaged-after-verification");
+  assert.throws(() => store.autosave(sim.exportState(), summary()), /damaged/);
+  assert.equal(memory.getItem(SAVE_PREFIX + "autosave"), "{damaged-after-verification");
+  store.autosave(sim.exportState(), summary(), true);
+  assert.equal(validations, 6, "explicit replacement validates the new save");
+
+  const unsupported = JSON.parse(memory.getItem(SAVE_PREFIX + "autosave")!);
+  unsupported.version = 2;
+  memory.setItem(SAVE_PREFIX + "autosave", JSON.stringify(unsupported));
+  assert.throws(() => store.autosave(sim.exportState(), summary()), /unsupported version/);
+  assert.equal(JSON.parse(memory.getItem(SAVE_PREFIX + "autosave")!).version, 2);
+});
+
+test("failed autosave writes preserve verification of the previous stored save", () => {
+  const { memory, sim, summary } = fixture();
+  let validations = 0;
+  const store = new SaveStore(memory, input => {
+    validations++;
+    return validateManagementSnapshot(input);
+  }, () => 1000);
+  store.autosave(sim.exportState(), summary());
+  const previous = memory.getItem(SAVE_PREFIX + "autosave");
+  sim.cash = 99;
+  memory.failWrites = true;
+  assert.throws(() => store.autosave(sim.exportState(), summary()), /storage is full/);
+  assert.equal(memory.getItem(SAVE_PREFIX + "autosave"), previous);
+  memory.failWrites = false;
+  store.autosave(sim.exportState(), summary());
+  assert.equal(validations, 3, "a failed write must not replace the previously verified raw value");
+  assert.equal(store.read("autosave")!.payload.cash, 99);
+});
+
 test("browser storage denial is reported without resetting a shift", () => {
   const blocked: SaveStorage = {
     get length() { throw new Error("Blocked"); }, key() { throw new Error("Blocked"); },

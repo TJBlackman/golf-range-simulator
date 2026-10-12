@@ -10,6 +10,7 @@ import {
   YARD,
   clamp,
   simulateShot,
+  simulateShotSummary,
   sampleShot,
 } from "./physics";
 import type { Point, Shape, Shot } from "./physics";
@@ -23,7 +24,8 @@ import type { CollectorBounds, Obstacle } from "./collisions";
 import { GOLFER_TYPES, HOPPER_CAPACITIES, getGolferMood } from "./management";
 import { createGolfCart, disposeGolfCart } from "./golf-cart";
 import { validateWorldState } from "./world-state";
-import { RangeEnvironment } from "./environment";
+import { RangeEnvironment, foliageBoundsPadding } from "./environment";
+import { createSpatialInstances, disposeSpatialInstances } from "./spatial-instances";
 import { HopperBeacon } from "./hopper-beacon";
 import { cartSpeedMultiplier, SAND_TRAP_OUTLINE, SAND_TRAP_ROTATION, SAND_TRAPS } from "./terrain";
 import type {
@@ -225,7 +227,7 @@ export class RangeScene {
   private helperRoute = helperRoute(this.rangeEnd);
   private ground!: THREE.Group;
   private secondDepot?: { object: THREE.Group; label: THREE.Sprite };
-  private fenceMeshes: THREE.Object3D[] = [];
+  private fenceMeshes: THREE.InstancedMesh[] = [];
   private targetGroups: THREE.Group[] = [];
   private backTrees: THREE.InstancedMesh[] = [];
   private hazards: Hazard[] = [];
@@ -255,6 +257,7 @@ export class RangeScene {
   fieldBalls!: THREE.InstancedMesh;
   hopperBalls!: THREE.InstancedMesh;
   flyingBalls!: THREE.InstancedMesh;
+  private readonly flightSample: Point = { x: 0, y: 0, z: 0 };
   tractorWheels: THREE.Object3D[] = [];
   tractorSteering: THREE.Object3D[] = [];
   collectorRoller?: THREE.Object3D;
@@ -275,8 +278,14 @@ export class RangeScene {
   private targetCamera = new THREE.Vector3();
   private targetLook = new THREE.Vector3();
   private shakeTime = 0;
+  private readonly cameraShakeOffset = new THREE.Vector3();
   private readonly sun: THREE.DirectionalLight;
   private readonly environment: RangeEnvironment;
+  /** Loading renders must wait while the beacon is temporarily enabled. */
+  warmingShaders = false;
+  // Keep the representative's materials alive so Three retains their programs.
+  // Its geometry is shared with visitor carts, and it never joins the scene.
+  private shaderCart?: ReturnType<typeof createGolfCart>;
 
   constructor(readonly canvas: HTMLCanvasElement) {
     this.renderer = new THREE.WebGLRenderer({
@@ -365,7 +374,25 @@ export class RangeScene {
     this.buildWildlife();
     this.buildBalls();
     await this.environment.ready();
-    await this.renderer.compileAsync(this.scene, this.camera);
+    await this.warmShaders();
+  }
+
+  private async warmShaders() {
+    this.shaderCart ??= createGolfCart(CART_COLORS[0], GOLFER_TYPES.casual.color);
+    this.warmingShaders = true;
+    try {
+      // Hidden meshes are compiled, but Three only gathers visible lights.
+      // Warm both lighting variants before the first full hopper, including
+      // the visitor cart's physical paint and glass absent from the range.
+      for (const full of [false, true]) {
+        this.hopperBeacon.setLoad(full ? this.cart.capacity : 0, this.cart.capacity);
+        await this.renderer.compileAsync(this.scene, this.camera);
+        await this.renderer.compileAsync(this.shaderCart.object, this.camera, this.scene);
+      }
+    } finally {
+      this.hopperBeacon.setLoad(0, this.cart.capacity);
+      this.warmingShaders = false;
+    }
   }
 
   private asset(id: string, x = 0, z = 0, scale = 1) {
@@ -474,10 +501,7 @@ export class RangeScene {
 
   /** Side fences up to the current back fence, rebuilt when the range grows. */
   private buildFences() {
-    for (const mesh of this.fenceMeshes) {
-      this.scene.remove(mesh);
-      if (mesh instanceof THREE.InstancedMesh) mesh.geometry.dispose();
-    }
+    disposeSpatialInstances(this.fenceMeshes);
     const end = this.rangeEnd;
     const placements: THREE.Matrix4[] = [];
     for (let z = 6; z < end; z += 3) {
@@ -605,6 +629,7 @@ export class RangeScene {
     swing.clampWhenFinished = true;
     swing.play();
     swing.paused = true;
+    mixer.update(0);
     const mood = this.moodIcon("happy");
     this.scene.add(mood);
     object.visible = false;
@@ -887,10 +912,7 @@ export class RangeScene {
 
   /** Move the wooded backdrop beyond the new fence when the range grows. */
   private buildBackTrees() {
-    for (const tree of this.backTrees) {
-      this.scene.remove(tree);
-      tree.geometry.dispose();
-    }
+    disposeSpatialInstances(this.backTrees);
     this.backTrees = [];
     const pine: THREE.Matrix4[] = [], broad: THREE.Matrix4[] = [];
     const random = (i: number) => ((Math.sin(i * 127.1 + 311.7) * 43758.5453) % 1 + 1) % 1;
@@ -908,6 +930,7 @@ export class RangeScene {
 
   private instanceAsset(id: string, placements: THREE.Matrix4[]) {
     const created: THREE.InstancedMesh[] = [];
+    if (!placements.length) return created;
     const root = this.assets.get(id)!.scene;
     root.updateMatrixWorld(true);
     const groups = new Map<THREE.Material, THREE.BufferGeometry[]>();
@@ -921,13 +944,13 @@ export class RangeScene {
     for (const [mat, geometries] of groups) {
       const merged = mergeGeometries(geometries);
       if (!merged) throw new Error(`Could not prepare ${id} geometry`);
-      const instance = new THREE.InstancedMesh(merged, mat, placements.length);
-      placements.forEach((matrix, i) => instance.setMatrixAt(i, matrix));
-      instance.castShadow = true;
-      instance.receiveShadow = true;
-      instance.computeBoundingSphere();
-      this.scene.add(instance);
-      created.push(instance);
+      const chunks = createSpatialInstances(merged, mat, placements, {
+        localBoundsPadding: /leaves/.test(mat.name) ? foliageBoundsPadding(merged) : 0,
+        castShadow: true,
+        receiveShadow: true,
+      });
+      this.scene.add(...chunks);
+      created.push(...chunks);
       geometries.forEach((g) => g.dispose());
     }
     return created;
@@ -1084,8 +1107,22 @@ export class RangeScene {
     this.fieldBalls = new THREE.InstancedMesh(geometry, ballMaterial, 1500);
     this.fieldBalls.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.fieldBalls.frustumCulled = false;
+    this.fieldBalls.count = 0;
     this.scene.add(this.fieldBalls);
     this.hopperBalls = new THREE.InstancedMesh(geometry, ballMaterial, MAX_HOPPER);
+    // Each load reveals a prefix of the same stack; build its matrices once.
+    for (let i = 0; i < MAX_HOPPER; i++) {
+      this.ballDummy.position.set(
+        -0.55 + (i % 8) * 0.15,
+        0.8 + Math.floor(i / 40) * 0.12,
+        -1.03 - Math.floor((i % 40) / 8) * 0.13,
+      );
+      this.ballDummy.scale.setScalar(1);
+      this.ballDummy.updateMatrix();
+      this.hopperBalls.setMatrixAt(i, this.ballDummy.matrix);
+    }
+    // Keep a full-stack bound even when the first rendered hopper is empty.
+    this.hopperBalls.computeBoundingSphere();
     this.hopperBalls.count = 0;
     this.tractor.add(this.hopperBalls);
     this.flyingBalls = new THREE.InstancedMesh(geometry, ballMaterial, 400);
@@ -1204,21 +1241,27 @@ export class RangeScene {
   }
 
   addFieldBall(point: Point, delay = 0, collectible = true) {
-    if (this.balls.length > 1000) {
-      const active = this.balls.filter((b) => b.active);
-      this.balls.length = 0;
-      this.balls.push(...active);
-    }
-    this.balls.push({
-      position: new THREE.Vector3(
-        collectible ? clamp(point.x, -52, 52) : point.x,
-        0.07,
-        clamp(point.z, 10, this.rangeEnd - 3),
-      ),
-      active: true,
-      pickableAt: collectible ? this.elapsed + delay : Infinity,
-    });
+    this.storeFieldBall(point, delay, collectible);
     this.syncBalls();
+  }
+
+  /** Landings can share one visual sync, and collected slots can hold new balls. */
+  private storeFieldBall(point: Point, delay = 0, collectible = true) {
+    let ball: FieldBall | undefined;
+    for (const candidate of this.balls) {
+      if (!candidate.active) { ball = candidate; break; }
+    }
+    if (!ball) {
+      ball = { position: new THREE.Vector3(), active: true };
+      this.balls.push(ball);
+    }
+    ball.position.set(
+      collectible ? clamp(point.x, -52, 52) : point.x,
+      0.07,
+      clamp(point.z, 10, this.rangeEnd - 3),
+    );
+    ball.active = true;
+    ball.pickableAt = collectible ? this.elapsed + delay : Infinity;
   }
 
   launchGolferShot(order: ShotOrder, wind: number) {
@@ -1262,7 +1305,7 @@ export class RangeScene {
       high = 1;
     for (let i = 0; i < 10; i++) {
       const power = (low + high) / 2;
-      const shot = simulateShot(
+      const shot = simulateShotSummary(
         { club, power, aim, wind, shape },
         npc.origin,
       );
@@ -1300,18 +1343,20 @@ export class RangeScene {
 
   updateFlights(dt: number): number {
     let hits = 0;
+    let landed = false;
     for (let i = this.airShots.length - 1; i >= 0; i--) {
       const flight = this.airShots[i],
         previous = flight.point;
       flight.time += dt * FLIGHT_SPEED;
-      flight.point = sampleShot(flight.shot, Math.max(0, flight.time));
+      const next = sampleShot(flight.shot, Math.max(0, flight.time), this.flightSample);
       const hit =
         flight.time > 0 &&
-        segmentHitsVehicle(previous, flight.point, {
+        segmentHitsVehicle(previous, next, {
           x: this.tractor.position.x,
           z: this.tractor.position.z,
           angle: this.tractorAngle,
         });
+      flight.point.x = next.x; flight.point.y = next.y; flight.point.z = next.z;
       if (hit || flight.time >= flight.shot.duration) {
         if (hit) {
           hits++;
@@ -1323,7 +1368,10 @@ export class RangeScene {
               -1.5,
             ),
           });
-        } else this.addFieldBall(flight.shot.end, 0, !flight.lost);
+        } else {
+          this.storeFieldBall(flight.shot.end, 0, !flight.lost);
+          landed = true;
+        }
         this.scene.remove(flight.trail);
         flight.trail.geometry.dispose();
         (flight.trail.material as THREE.Material).dispose();
@@ -1357,23 +1405,14 @@ export class RangeScene {
         ball.velocity.x *= 0.65;
         ball.velocity.z *= 0.65;
         if (ball.velocity.y < 0.65) {
-          this.addFieldBall(ball.position, 0.8);
+          this.storeFieldBall(ball.position, 0.8);
+          landed = true;
           this.bouncingBalls.splice(i, 1);
         }
       }
     }
-    const positions = [
-      ...this.airShots.filter((f) => f.time >= 0).map((f) => vector(f.point)),
-      ...this.bouncingBalls.map((b) => b.position),
-    ];
-    this.flyingBalls.count = positions.length;
-    positions.forEach((point, i) => {
-      this.ballDummy.position.copy(point);
-      this.ballDummy.scale.setScalar(1.7);
-      this.ballDummy.updateMatrix();
-      this.flyingBalls.setMatrixAt(i, this.ballDummy.matrix);
-    });
-    this.flyingBalls.instanceMatrix.needsUpdate = true;
+    if (landed) this.syncBalls();
+    this.syncFlyingBalls();
     return hits;
   }
 
@@ -1429,9 +1468,12 @@ export class RangeScene {
         npc.mood.position.set(npc.origin.x, 3.8, npc.origin.z);
         continue;
       }
-      if (state.waiting || state.status === "leaving") {
+      if ((state.waiting || state.status === "leaving") &&
+          (!npc.swing.paused || npc.swing.time !== 0)) {
         npc.swing.reset().play();
         npc.swing.paused = true;
+        // Apply address once; paused actions need no further track evaluation.
+        npc.mixer.update(0);
       }
       const key = getGolferMood(state);
       if (npc.moodKey !== key) {
@@ -1462,6 +1504,7 @@ export class RangeScene {
       npc.mood.visible = false;
       npc.swing.reset().play();
       npc.swing.paused = true;
+      npc.mixer.update(0);
       npc.walk = undefined;
       npc.cart = this.createVisitorCart(npc, state.id, true);
     } else if (state.status === "leaving") {
@@ -1972,30 +2015,86 @@ export class RangeScene {
   }
 
   syncBalls() {
-    this.fieldBalls.count = this.balls.length;
-    this.balls.forEach((ball, i) => {
-      this.ballDummy.position.copy(ball.position);
-      this.ballDummy.scale.setScalar(ball.active ? 1 : 0);
-      this.ballDummy.updateMatrix();
-      this.fieldBalls.setMatrixAt(i, this.ballDummy.matrix);
-    });
-    this.fieldBalls.instanceMatrix.needsUpdate = true;
+    let count = 0;
+    for (const ball of this.balls) if (ball.active) count++;
+    this.ensureBallCapacity(this.fieldBalls, count);
+    let index = 0, firstChanged = count, lastChanged = -1;
+    for (const ball of this.balls) {
+      if (!ball.active) continue;
+      if (this.writeBallInstance(this.fieldBalls, index, ball.position, 1)) {
+        firstChanged = Math.min(firstChanged, index);
+        lastChanged = index;
+      }
+      index++;
+    }
+    this.fieldBalls.count = count;
+    this.uploadBallInstances(this.fieldBalls, firstChanged, lastChanged);
   }
 
   setHopper(count: number) {
     this.hopperBeacon.setLoad(count, this.cart.capacity);
     this.hopperBalls.count = Math.min(count, MAX_HOPPER);
-    for (let i = 0; i < this.hopperBalls.count; i++) {
-      this.ballDummy.position.set(
-        -0.55 + (i % 8) * 0.15,
-        0.8 + Math.floor(i / 40) * 0.12,
-        -1.03 - Math.floor((i % 40) / 8) * 0.13,
-      );
-      this.ballDummy.scale.setScalar(1);
-      this.ballDummy.updateMatrix();
-      this.hopperBalls.setMatrixAt(i, this.ballDummy.matrix);
+  }
+
+  /** Saved inventories and repeated stock purchases can exceed initial capacity. */
+  private ensureBallCapacity(mesh: THREE.InstancedMesh, count: number) {
+    if (count <= mesh.instanceMatrix.count) return;
+    const capacity = Math.max(count, mesh.instanceMatrix.count * 2);
+    const array = new Float32Array(capacity * 16);
+    array.set(mesh.instanceMatrix.array);
+    // Release the old instance buffer and vertex bindings before replacing it.
+    // Geometry/material are shared by all three ball meshes and remain alive.
+    mesh.dispose();
+    mesh.instanceMatrix = new THREE.InstancedBufferAttribute(array, 16)
+      .setUsage(THREE.DynamicDrawUsage);
+  }
+
+  /** Balls only translate and uniformly scale; avoid composing full transforms. */
+  private writeBallInstance(mesh: THREE.InstancedMesh, index: number, point: Point, scale: number) {
+    const array = mesh.instanceMatrix.array, offset = index * 16;
+    const x = Math.fround(point.x), y = Math.fround(point.y), z = Math.fround(point.z);
+    const size = Math.fround(scale);
+    if (array[offset] === size && array[offset + 5] === size && array[offset + 10] === size &&
+        array[offset + 12] === x && array[offset + 13] === y && array[offset + 14] === z &&
+        array[offset + 15] === 1) return false;
+    array[offset] = array[offset + 5] = array[offset + 10] = size;
+    array[offset + 1] = array[offset + 2] = array[offset + 3] = array[offset + 4] = 0;
+    array[offset + 6] = array[offset + 7] = array[offset + 8] = array[offset + 9] = 0;
+    array[offset + 11] = 0;
+    array[offset + 12] = x; array[offset + 13] = y; array[offset + 14] = z;
+    array[offset + 15] = 1;
+    return true;
+  }
+
+  private uploadBallInstances(mesh: THREE.InstancedMesh, first: number, last: number) {
+    if (last < first) return;
+    // Retain pending ranges when pickup and landings sync before the next render.
+    mesh.instanceMatrix.addUpdateRange(first * 16, (last - first + 1) * 16);
+    mesh.instanceMatrix.needsUpdate = true;
+  }
+
+  private syncFlyingBalls() {
+    let count = this.bouncingBalls.length;
+    for (const flight of this.airShots) if (flight.time >= 0) count++;
+    this.ensureBallCapacity(this.flyingBalls, count);
+    let index = 0, firstChanged = count, lastChanged = -1;
+    for (const flight of this.airShots) {
+      if (flight.time < 0) continue;
+      if (this.writeBallInstance(this.flyingBalls, index, flight.point, 1.7)) {
+        firstChanged = Math.min(firstChanged, index);
+        lastChanged = index;
+      }
+      index++;
     }
-    this.hopperBalls.instanceMatrix.needsUpdate = true;
+    for (const ball of this.bouncingBalls) {
+      if (this.writeBallInstance(this.flyingBalls, index, ball.position, 1.7)) {
+        firstChanged = Math.min(firstChanged, index);
+        lastChanged = index;
+      }
+      index++;
+    }
+    this.flyingBalls.count = count;
+    this.uploadBallInstances(this.flyingBalls, firstChanged, lastChanged);
   }
 
   drive(
@@ -2144,7 +2243,13 @@ export class RangeScene {
     // stretching one map over the full 300-yard range.
     this.sun.target.position.set(this.tractor.position.x, 0, this.tractor.position.z + 20);
     this.sun.position.set(this.tractor.position.x - 62, 68, this.tractor.position.z - 53);
-    for (const golfer of this.golfers) golfer.mixer.update(dt);
+    if (dt > 0) {
+      for (const golfer of this.golfers) {
+        // A clamped LoopOnce swing remains enabled but paused after finishing.
+        // Advance live swings, including hidden ones, without resampling idle poses.
+        if (golfer.swing.enabled && !golfer.swing.paused) golfer.mixer.update(dt);
+      }
+    }
     for (const animal of this.animals) this.wander(animal, dt);
     this.updateWalks();
     this.updateGolfCarts();
@@ -2181,15 +2286,19 @@ export class RangeScene {
         this.tractor.position.z + Math.cos(a) * 6,
       );
     }
-    const blend = 1 - Math.exp(-dt * 3);
-    this.camera.position.lerp(this.targetCamera, blend);
-    this.cameraTarget.lerp(this.targetLook, blend);
-    this.shakeTime = Math.max(0, this.shakeTime - dt);
-    if (this.shakeTime) {
-      this.camera.position.x +=
-        Math.sin(this.elapsed * 70) * this.shakeTime * 0.3;
-      this.camera.position.y +=
-        Math.cos(this.elapsed * 60) * this.shakeTime * 0.2;
+    if (dt > 0) {
+      const blend = 1 - Math.exp(-dt * 3);
+      // Shake is a visual offset, never part of the next follow position.
+      // Leave it in place on paused frames so rendering cannot accumulate it.
+      this.camera.position.sub(this.cameraShakeOffset).lerp(this.targetCamera, blend);
+      this.cameraTarget.lerp(this.targetLook, blend);
+      this.shakeTime = Math.max(0, this.shakeTime - dt);
+      this.cameraShakeOffset.set(
+        Math.sin(this.elapsed * 70) * this.shakeTime * 0.3,
+        Math.cos(this.elapsed * 60) * this.shakeTime * 0.2,
+        0,
+      );
+      this.camera.position.add(this.cameraShakeOffset);
     }
     if (this.depotLabel)
       this.depotLabel.visible =
@@ -2282,6 +2391,7 @@ export class RangeScene {
     this.lookYaw = cloneState.lookYaw; this.lookPitch = cloneState.lookPitch; this.lookZoom = cloneState.lookZoom;
     this.looking = false; this.lookHoldUntil = cloneState.lookHoldUntil;
     this.shakeTime = 0;
+    this.cameraShakeOffset.set(0, 0, 0);
     this.balls.length = 0;
     for (const b of cloneState.balls) this.balls.push({
       position: new THREE.Vector3().fromArray(b.position), active: b.active,
@@ -2306,13 +2416,7 @@ export class RangeScene {
     for (const b of cloneState.bouncingBalls) this.bouncingBalls.push({
       position: new THREE.Vector3().fromArray(b.position), velocity: new THREE.Vector3().fromArray(b.velocity),
     });
-    const airborne = [...this.airShots.filter(a => a.time >= 0).map(a => vector(a.point)), ...this.bouncingBalls.map(b => b.position)];
-    this.flyingBalls.count = airborne.length;
-    airborne.forEach((position,i) => {
-      this.ballDummy.position.copy(position); this.ballDummy.scale.setScalar(1.7); this.ballDummy.updateMatrix();
-      this.flyingBalls.setMatrixAt(i,this.ballDummy.matrix);
-    });
-    this.flyingBalls.instanceMatrix.needsUpdate = true;
+    this.syncFlyingBalls();
     cloneState.golfers.forEach((g,i) => {
       const npc = this.golfers[i];
       npc.type = g.type; npc.status = g.status; npc.moodKey = "";

@@ -839,6 +839,86 @@ test("wing contact stays latched until the collector clears the obstacle", () =>
   assert.ok(vehicleObstacleDistance({ ...resolved, x: resolved.x - 1 }, tree, bounds) > 0.75);
 });
 
+test("collision bounds include large obstacle edges even when their centers are far away", () => {
+  const cart = { x: 0, z: 0, angle: 0 };
+  const tree: Obstacle = { id: "large-tree", name: "Tree", kind: "circle", x: 20, z: 0, radius: 19 };
+  const treeHit = resolveMove(cart, cart, [tree]);
+  assert.equal(treeHit.hit, tree);
+  assert.ok(obstacleDistance(treeHit.position, tree) >= VEHICLE_RADIUS);
+
+  const fence: Obstacle = {
+    id: "boundary", name: "Boundary fence", kind: "box",
+    minX: 4.2, maxX: 4.3, minZ: -100, maxZ: 200,
+  };
+  assert.equal(resolveMove(cart, cart, [fence]).hit, undefined);
+  const bounds = collectorBounds(4.395);
+  const fenceHit = resolveVehicleMove(cart, cart, [fence], bounds);
+  assert.equal(fenceHit.hit, fence);
+  assert.ok(vehicleObstacleDistance({ ...fenceHit.position, angle: fenceHit.angle }, fence, bounds) >= -1e-8);
+});
+
+test("body and collector bounds are reevaluated after another obstacle pushes the cart", () => {
+  const cart = { x: 0, z: 0, angle: 0 };
+  const enclosingBox: Obstacle = {
+    id: "enclosing", name: "Box", kind: "box",
+    minX: -10, maxX: 10, minZ: -10, maxZ: 10,
+  };
+  const outsideTree: Obstacle = {
+    id: "outside", name: "Tree", kind: "circle", x: -11.55, z: 0, radius: 0.25,
+  };
+  const body = resolveMove(cart, cart, [enclosingBox, outsideTree]);
+  assert.equal(body.hit, enclosingBox);
+  assert.ok(body.position.x < -13);
+  assert.ok(obstacleDistance(body.position, outsideTree) >= VEHICLE_RADIUS);
+
+  const fence: Obstacle = {
+    id: "wing-fence", name: "Fence", kind: "box",
+    minX: 3.5, maxX: 8, minZ: -10, maxZ: 10,
+  };
+  const wingTree: Obstacle = {
+    id: "wing-tree", name: "Tree", kind: "circle", x: -5.4, z: 2.5, radius: 0.35,
+  };
+  const bounds = collectorBounds(4.395);
+  assert.equal(resolveVehicleMove(cart, cart, [wingTree], bounds).hit, undefined);
+  const collector = resolveVehicleMove(cart, cart, [fence, wingTree], bounds);
+  assert.equal(collector.hit, fence);
+  assert.ok(collector.position.z < -0.05, "the first fence push must allow contact with the second obstacle");
+});
+
+test("a thin collector rotating through a distant boundary keeps the swept collision", () => {
+  const bounds: CollectorBounds = { minX: -4.395, maxX: 4.395, minZ: 1.99, maxZ: 2.01 };
+  const previous = { x: 0, z: 0, angle: 0 };
+  const next = { ...previous, angle: Math.PI / 2 };
+  const fence: Obstacle = {
+    id: "thin-boundary", name: "Boundary fence", kind: "box",
+    minX: 4.7, maxX: 4.71, minZ: -100, maxZ: 100,
+  };
+  assert.ok(vehicleObstacleDistance(previous, fence, bounds) > 0);
+  assert.ok(vehicleObstacleDistance(next, fence, bounds) > 0);
+  const result = resolveVehicleMove(previous, next, [fence], bounds);
+  assert.equal(result.hit, fence);
+  assert.ok(result.angle < next.angle);
+  assert.ok(vehicleObstacleDistance({ ...result.position, angle: result.angle }, fence, bounds) >= -1e-8);
+});
+
+test("collector corner contacts at its maximum rotated reach pass the conservative bounds", () => {
+  const bounds = collectorBounds(4.395);
+  const reach = Math.hypot(bounds.maxX, bounds.maxZ);
+  const cart = { x: 0, z: 0, angle: Math.atan2(bounds.maxZ, bounds.maxX) };
+  const tree: Obstacle = {
+    id: "corner-tree", name: "Tree", kind: "circle", x: reach + 0.2 - 1e-7, z: 0, radius: 0.2,
+  };
+  const fence: Obstacle = {
+    id: "corner-fence", name: "Fence", kind: "box",
+    minX: reach - 1e-7, maxX: reach + 1, minZ: -0.05, maxZ: 0.05,
+  };
+  for (const obstacle of [tree, fence]) {
+    const result = resolveVehicleMove(cart, cart, [obstacle], bounds);
+    assert.equal(result.hit, obstacle);
+    assert.ok(vehicleObstacleDistance({ ...result.position, angle: result.angle }, obstacle, bounds) >= -1e-8);
+  }
+});
+
 test("airborne collision sweeps catch high-speed and rotated hits but ignore balls over the roof or on the ground", () => {
   const cart = { x: 0, z: 20, angle: 0 };
   assert.equal(
