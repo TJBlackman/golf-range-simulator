@@ -16,6 +16,17 @@ export const VEHICLE_RADIUS = 1.55;
 const clamp = (n: number, low: number, high: number) =>
   Math.max(low, Math.min(high, n));
 
+/** Cheap, conservative bounds check before distance/SAT work. */
+function mayOverlap(position: Position2, obstacle: Obstacle, reach: number): boolean {
+  if (obstacle.kind === "circle") {
+    const extent = reach + obstacle.radius;
+    return Math.abs(position.x - obstacle.x) <= extent &&
+      Math.abs(position.z - obstacle.z) <= extent;
+  }
+  return position.x + reach >= obstacle.minX && position.x - reach <= obstacle.maxX &&
+    position.z + reach >= obstacle.minZ && position.z - reach <= obstacle.maxZ;
+}
+
 export function obstacleDistance(
   position: Position2,
   obstacle: Obstacle,
@@ -37,9 +48,11 @@ export function resolveMove(
   radius = VEHICLE_RADIUS,
 ): { position: Position2; hit?: Obstacle } {
   const position = { ...next };
+  const broadphaseRadius = radius + 1e-8;
   let hit: Obstacle | undefined;
   for (let pass = 0; pass < 3; pass++) {
     for (const obstacle of obstacles) {
+      if (!mayOverlap(position, obstacle, broadphaseRadius)) continue;
       if (obstacleDistance(position, obstacle) >= radius) continue;
       hit ??= obstacle;
       if (obstacle.kind === "circle") {
@@ -172,6 +185,9 @@ export function resolveVehicleMove(
     Math.max(Math.abs(collector.minX), Math.abs(collector.maxX)),
     Math.max(Math.abs(collector.minZ), Math.abs(collector.maxZ)),
   );
+  // A circle enclosing every collector heading also covers its sweep. The
+  // padding keeps roundoff at rotated corners in the exact contact test.
+  const broadphaseReach = reach + 1e-8;
   // Keep even a thin collector from skipping a tree or fence between frames.
   const steps = Math.max(1, Math.ceil((Math.hypot(dx, dz) + Math.abs(turn) * reach) / 0.2));
   let position: Position2 = { x: previous.x, z: previous.z };
@@ -185,6 +201,9 @@ export function resolveVehicleMove(
       hit ??= body.hit;
       let collectorMoved = false;
       for (const obstacle of obstacles) {
+        // Check the current position, because earlier contacts can push the
+        // cart into a later obstacle during this same resolution pass.
+        if (!mayOverlap(position, obstacle, broadphaseReach)) continue;
         const contact = collectorContact({ ...position, angle }, collector, obstacle);
         if (contact.distance >= 0) continue;
         hit ??= obstacle;

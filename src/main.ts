@@ -20,6 +20,7 @@ import type { SpillCause, UpgradeId, UpgradeCategory, ManagementSnapshot } from 
 import { TARGETS, YARD } from "./physics";
 import { SaveStore, SaveOwnership, SAVE_NAME_LIMIT, ACTIVE_SHIFT_KEY } from "./saves";
 import { validateWorldState } from "./world-state";
+import { FrameMetrics } from "./performance";
 
 const icons = {
   menu: '<path d="M5 7h14M5 12h14M5 17h14"/>',
@@ -161,6 +162,10 @@ let lastTime = performance.now(),
   frames = 0,
   fps = 0,
   hudTime = 0;
+let inactivePaintPending = true;
+let wasRunning = false;
+const frameMetrics = new FrameMetrics();
+const profileFrames = new URLSearchParams(location.search).has("profile");
 window.addEventListener("error", (e) => errors.push(e.message));
 window.addEventListener("unhandledrejection", (e) =>
   errors.push(String(e.reason)),
@@ -431,13 +436,14 @@ function renderShop() {
   refreshShop();
 }
 function refreshShop() {
-  if ($("#shop").hidden) return;
-  $("#shop-cash").textContent = money(sim.cash);
+  if (hud.shop.hidden) return;
+  setHudText(hud.shopCash, money(sim.cash));
   for (const button of document.querySelectorAll<HTMLButtonElement>(
     "[data-buy]",
   )) {
     const price = sim.price(button.dataset.buy as UpgradeId);
-    button.disabled = price === undefined || sim.cash < price;
+    const disabled = price === undefined || sim.cash < price;
+    if (button.disabled !== disabled) button.disabled = disabled;
   }
 }
 function toggleShop(open: boolean = $("#shop").hidden === true) {
@@ -555,79 +561,115 @@ function recover() {
   if (state.paused) pause();
 }
 
+// These HUD nodes survive shop rebuilds and save restores. Keep their references
+// and only change displayed values when necessary: even identical textContent
+// assignments replace text nodes, and innerHTML would rebuild the button's keycap.
+const hud = {
+  game: $(".game"), notice: $("#notice"),
+  reserve: $("#reserve-count"), supply: $("#supply-stat"),
+  cash: $("#cash"), cashStat: $("#cash-stat"),
+  satisfaction: $("#satisfaction"), mood: $("#mood-stat"), moodLabel: $("#mood-label"),
+  hopper: $("#hopper-count"), capacity: $("#hopper-cap"),
+  hopperBar: $("#hopper-bar"), hopperStat: $("#hopper-stat"),
+  unload: $("#unload"), shopToggle: $("#shop-toggle"),
+  shop: $("#shop"), shopCash: $("#shop-cash"),
+  returned: $("#returned-count"), deliveries: $("#delivery-count"),
+  spilled: $("#spilled-count"), earned: $("#earned-count"),
+  shiftClock: $("#shift-clock"), time: $("#time-score"),
+  conditions: $("#range-conditions"), map: $<HTMLCanvasElement>("#minimap"),
+};
+function setHudText(element: HTMLElement, text: string) {
+  if (element.textContent !== text) element.textContent = text;
+}
+function setHudAttribute(element: HTMLElement, name: string, value: string) {
+  if (element.getAttribute(name) !== value) element.setAttribute(name, value);
+}
+function setHudClass(element: HTMLElement, name: string, enabled: boolean) {
+  if (element.classList.contains(name) !== enabled) element.classList.toggle(name, enabled);
+}
+function setHudHidden(element: HTMLElement, hidden: boolean) {
+  if (element.hidden !== hidden) element.hidden = hidden;
+}
+let unloadMarkup = "";
+let hopperFill = "";
+
 function updateHUD() {
   if (!state.ready) return;
-  $("#reserve-count").textContent = String(sim.supply);
-  $("#supply-stat").classList.toggle("low-supply", sim.supply <= 21);
-  $("#supply-stat").setAttribute(
+  inactivePaintPending = true;
+  const supply = sim.supply, satisfaction = sim.satisfaction, waiting = sim.waiting;
+  setHudText(hud.reserve, String(supply));
+  setHudClass(hud.supply, "low-supply", supply <= 21);
+  setHudAttribute(hud.supply,
     "aria-label",
-    `${sim.supply} balls ready to hit`,
+    `${supply} balls ready to hit`,
   );
-  $("#cash").textContent = money(sim.cash);
-  $("#cash-stat").classList.toggle(
+  setHudText(hud.cash, money(sim.cash));
+  setHudClass(hud.cashStat,
     "pulse",
     performance.now() < state.cashPulseUntil,
   );
-  $("#satisfaction").textContent = String(sim.satisfaction);
+  setHudText(hud.satisfaction, String(satisfaction));
   const mood =
-    sim.satisfaction < 35
+    satisfaction < 35
       ? "upset"
-      : sim.satisfaction < 70
+      : satisfaction < 70
         ? "impatient"
         : "happy";
-  $("#mood-stat").dataset.mood = mood;
-  $("#mood-label").textContent = sim.waiting
-    ? `${sim.waiting} WAITING`
-    : "SATISFACTION";
-  $("#mood-stat").setAttribute(
+  setHudAttribute(hud.mood, "data-mood", mood);
+  setHudText(hud.moodLabel, waiting ? `${waiting} WAITING` : "SATISFACTION");
+  setHudAttribute(hud.mood,
     "aria-label",
-    `Golfer satisfaction ${sim.satisfaction}%. ${sim.waiting} waiting for balls.`,
+    `Golfer satisfaction ${satisfaction}%. ${waiting} waiting for balls.`,
   );
-  $("#hopper-count").textContent = String(sim.hopper);
+  setHudText(hud.hopper, String(sim.hopper));
   const capacity = sim.hopperCapacity;
-  $("#hopper-cap").textContent = String(capacity);
-  $("#hopper-bar").style.width = `${(sim.hopper / capacity) * 100}%`;
-  $("#hopper-stat").classList.toggle("full", sim.hopper === capacity);
-  $("#hopper-stat").setAttribute(
+  setHudText(hud.capacity, String(capacity));
+  const fill = `${(sim.hopper / capacity) * 100}%`;
+  if (hopperFill !== fill) {
+    hud.hopperBar.style.width = fill;
+    hopperFill = fill;
+  }
+  setHudClass(hud.hopperStat, "full", sim.hopper === capacity);
+  setHudAttribute(hud.hopperStat,
     "aria-label",
     `${sim.hopper} of ${capacity} balls in the hopper`,
   );
   const nearDepot = state.started && !state.over && atDepot();
   const canReturn = nearDepot && sim.hopper > 0;
-  $("#unload").hidden = !canReturn;
-  $("#shop-toggle").hidden = !nearDepot;
-  if (!nearDepot && !$("#shop").hidden) toggleShop(false);
+  setHudHidden(hud.unload, !canReturn);
+  setHudHidden(hud.shopToggle, !nearDepot);
+  if (!nearDepot && !hud.shop.hidden) toggleShop(false);
   refreshShop();
-  $("#unload").innerHTML =
-    Math.abs(world.tractorSpeed) > 1
+  if (canReturn) {
+    const markup = Math.abs(world.tractorSpeed) > 1
       ? "Brake to return <kbd>Space</kbd>"
-      : `Return ${sim.hopper} balls${sim.hopper === sim.hopperCapacity ? ` +${money(sim.fullLoadBonus)}` : ""} <kbd>E</kbd>`;
-  $("#returned-count").textContent = String(sim.returned);
-  $("#delivery-count").textContent = String(sim.deliveries);
-  $("#spilled-count").textContent = String(sim.spilled);
-  $("#earned-count").textContent = money(sim.earned);
-  $("#shift-clock").textContent = clock(sim.score);
-  $("#time-score").textContent = clock(sim.score);
-  $("#range-conditions").textContent =
-    `${sim.rangeYards} YD RANGE · ${state.wind ? "LIGHT BREEZE" : "CALM CONDITIONS"}`;
+      : `Return ${sim.hopper} balls${sim.hopper === capacity ? ` +${money(sim.fullLoadBonus)}` : ""} <kbd>E</kbd>`;
+    if (markup !== unloadMarkup) {
+      hud.unload.innerHTML = markup;
+      unloadMarkup = markup;
+    }
+  }
+  setHudText(hud.returned, String(sim.returned));
+  setHudText(hud.deliveries, String(sim.deliveries));
+  setHudText(hud.spilled, String(sim.spilled));
+  setHudText(hud.earned, money(sim.earned));
+  const time = clock(sim.score);
+  setHudText(hud.shiftClock, time);
+  setHudText(hud.time, time);
+  setHudText(hud.conditions,
+    `${sim.rangeYards} YD RANGE · ${state.wind ? "LIGHT BREEZE" : "CALM CONDITIONS"}`);
   drawMap();
 }
 
-function drawMap() {
-  const canvas = $<HTMLCanvasElement>("#minimap"),
-    w = canvas.width;
-  // Same scale on both axes so the map keeps the range's real proportions,
-  // and the canvas grows with the range so a short range is not mostly blank.
-  const scale = (w - 28) / 114;
-  const wanted = Math.round(28 + (world.rangeEnd + 6) * scale);
-  if (canvas.height !== wanted) canvas.height = wanted;
-  const ctx = canvas.getContext("2d")!,
-    h = canvas.height;
-  const map = (x: number, z: number) => ({
-    x: w / 2 - x * scale,
-    y: h - 14 - (z + 3) * scale,
-  });
-  ctx.clearRect(0, 0, w, h);
+// Keep static paint in detached canvases, preserving the depot markers' original
+// placement above the balls. Keys use actual geometry rather than upgrade levels
+// so loading a same-length save with different hazards or depots also repaints.
+const mapBackground = document.createElement("canvas");
+const mapDepots = document.createElement("canvas");
+let mapBackgroundKey = "", mapDepotsKey = "";
+type MapPoint = (x: number, z: number) => { x: number; y: number };
+
+function paintMapBackground(ctx: CanvasRenderingContext2D, map: MapPoint, scale: number) {
   const top = map(0, world.rangeEnd + 3).y,
     left = map(57, 0).x,
     right = map(-57, 0).x,
@@ -689,6 +731,31 @@ function drawMap() {
   ctx.moveTo(boundaryLeft.x, boundaryLeft.y);
   ctx.lineTo(boundaryRight.x, boundaryRight.y);
   ctx.stroke();
+}
+
+function drawMap() {
+  const canvas = hud.map,
+    w = canvas.width;
+  // Same scale on both axes so the map keeps the range's real proportions,
+  // and the canvas grows with the range so a short range is not mostly blank.
+  const scale = (w - 28) / 114;
+  const wanted = Math.round(28 + (world.rangeEnd + 6) * scale);
+  if (canvas.height !== wanted) canvas.height = wanted;
+  const ctx = canvas.getContext("2d")!,
+    h = canvas.height;
+  const map = (x: number, z: number) => ({
+    x: w / 2 - x * scale,
+    y: h - 14 - (z + 3) * scale,
+  });
+  ctx.clearRect(0, 0, w, h);
+  const backgroundKey = JSON.stringify([w, h, world.rangeEnd, world.obstacles]);
+  if (backgroundKey !== mapBackgroundKey) {
+    mapBackground.width = w;
+    mapBackground.height = h;
+    paintMapBackground(mapBackground.getContext("2d")!, map, scale);
+    mapBackgroundKey = backgroundKey;
+  }
+  ctx.drawImage(mapBackground, 0, 0);
   // Balls: outlined white dots drawn as one path so hundreds stay cheap.
   ctx.fillStyle = "#fffef4";
   ctx.strokeStyle = "#2c4633";
@@ -715,11 +782,22 @@ function drawMap() {
   ctx.fillStyle = "#a08c67";
   ctx.strokeStyle = "#fbf7e6";
   ctx.lineWidth = 1.5;
-  for (const depot of world.depots) {
-    const p = map(depot.x, depot.z);
-    ctx.fillRect(p.x - 7, p.y - 5, 14, 10);
-    ctx.strokeRect(p.x - 7, p.y - 5, 14, 10);
+  const depotsKey = JSON.stringify([w, h, world.depots]);
+  if (depotsKey !== mapDepotsKey) {
+    mapDepots.width = w;
+    mapDepots.height = h;
+    const depotContext = mapDepots.getContext("2d")!;
+    depotContext.fillStyle = ctx.fillStyle;
+    depotContext.strokeStyle = ctx.strokeStyle;
+    depotContext.lineWidth = ctx.lineWidth;
+    for (const depot of world.depots) {
+      const p = map(depot.x, depot.z);
+      depotContext.fillRect(p.x - 7, p.y - 5, 14, 10);
+      depotContext.strokeRect(p.x - 7, p.y - 5, 14, 10);
+    }
+    mapDepotsKey = depotsKey;
   }
+  ctx.drawImage(mapDepots, 0, 0);
   for (const npc of world.golfers) {
     const p = map(npc.origin.x, 4);
     ctx.fillStyle = npc.status === "empty" ? "#73816d" : "#c0c7ac";
@@ -790,6 +868,7 @@ function closeDialog() {
   lastTime = performance.now();
 }
 function changeCamera() {
+  inactivePaintPending = true;
   world.cameraMode = world.cameraMode === "chase" ? "overview" : "chase";
   $("#camera").classList.toggle("active", world.cameraMode === "overview");
   $("#camera span").textContent =
@@ -928,11 +1007,13 @@ $("#dialog-content").addEventListener("submit", (e) => {
 $("#dialog-content").addEventListener("change", (e) => {
   const input = e.target as HTMLSelectElement;
   if (input.id === "wind-setting") {
+    inactivePaintPending = true;
     state.wind = input.value === "calm" ? 0 : 1.8;
     world.setWind(state.wind);
     storage.set("wind", input.value);
   }
   if (input.id === "quality-setting") {
+    inactivePaintPending = true;
     world.setQuality(input.value as "high" | "low");
     storage.set("quality", input.value);
   }
@@ -1026,15 +1107,43 @@ window.addEventListener("storage", event => {
   if (!state.paused && !state.over) pause();
   else saveMessage("Another tab owns the automatic save. Resume here to save this shift automatically.");
 });
-window.setInterval(() => autosave(), 30_000);
-window.addEventListener("resize", () => world?.resize());
+window.setInterval(() => {
+  // Pause/end/pagehide already save synchronously. Do not serialize an unchanged
+  // scene repeatedly while it is sitting behind a menu.
+  if (state.started && !state.paused && !state.over && !dialog.open && !document.hidden) autosave();
+}, 30_000);
+window.addEventListener("resize", () => {
+  world?.resize();
+  inactivePaintPending = true;
+});
 
 function animate(now: number) {
-  if (now - lastTime < 1000 / 75) return;
+  const workStarted = profileFrames ? performance.now() : 0;
   const dt = Math.min((now - lastTime) / 1000, 0.05);
   lastTime = now;
+  if (document.hidden) {
+    if (wasRunning) {
+      frames = fps = 0;
+      fpsStart = now;
+      frameMetrics.reset();
+    }
+    inactivePaintPending = true;
+    wasRunning = false;
+    return;
+  }
+  // DOM feedback may expire while the 3D scene is paused. It does not require
+  // another WebGL draw or simulation update.
+  if (state.noticeUntil && now >= state.noticeUntil) {
+    state.noticeUntil = 0;
+    setHudHidden(hud.notice, true);
+  }
+  setHudClass(hud.game, "impact", now < state.impactUntil);
+  if (state.cashPulseUntil && now >= state.cashPulseUntil) {
+    state.cashPulseUntil = 0;
+    setHudClass(hud.cashStat, "pulse", false);
+  }
   if (!state.ready) {
-    world.renderer.render(world.scene, world.camera);
+    if (!world.warmingShaders) world.renderer.render(world.scene, world.camera);
     return;
   }
   const running =
@@ -1043,6 +1152,16 @@ function animate(now: number) {
     !state.paused &&
     !dialog.open &&
     !document.hidden;
+  // A paused scene has no moving parts. Repaint once after transitions or
+  // explicit changes, then leave the existing canvas alone until play resumes.
+  if (!running && !wasRunning && !inactivePaintPending) return;
+  if (running !== wasRunning) {
+    frames = 0;
+    fpsStart = now;
+    fps = 0;
+    frameMetrics.reset();
+  }
+  wasRunning = running;
   if (running) {
     const forward =
       (keys.has("w") || keys.has("arrowup") || touch.has("forward") ? 1 : 0) -
@@ -1081,12 +1200,13 @@ function animate(now: number) {
     handleEvents(now);
   }
   world.update(running && !state.over ? dt : 0);
-  if (now - state.noticeUntil > 0) $("#notice").hidden = true;
-  $(".game").classList.toggle("impact", now < state.impactUntil);
   if (now - hudTime > 100) {
     updateHUD();
     hudTime = now;
   }
+  inactivePaintPending = false;
+  if (!running) return;
+  if (profileFrames) frameMetrics.record(now, performance.now() - workStarted);
   frames++;
   if (now - fpsStart > 1000) {
     fps = Math.round((frames * 1000) / (now - fpsStart));
@@ -1133,6 +1253,15 @@ async function init() {
         ownsAutosave: () => saveOwnership.owns(),
         loadSave,
         exportSave,
+        performance: () => ({
+          profiling: profileFrames,
+          frames: frameMetrics.snapshot(),
+          render: { ...world.renderer.info.render },
+          memory: { ...world.renderer.info.memory },
+          pixelRatio: world.renderer.getPixelRatio(),
+          fieldInstances: world.fieldBalls.count,
+          airborneInstances: world.flyingBalls.count,
+        }),
         snapshot: () => ({
           ready: state.ready,
           started: state.started,

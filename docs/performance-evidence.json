@@ -1,0 +1,272 @@
+{
+  "date": "2026-10-12",
+  "baselineCommit": "962fd41",
+  "environment": {
+    "gpu": "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Ti (0x00002486) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+    "viewport": [
+      1280,
+      800
+    ],
+    "pixelRatio": 1,
+    "quality": "high",
+    "rangeYards": 300,
+    "bays": 16
+  },
+  "baseline": {
+    "bays": 16,
+    "errors": [],
+    "gpu": "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Ti (0x00002486) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+    "range": 300,
+    "results": [
+      {
+        "camera": [
+          -38,
+          4.4,
+          8
+        ],
+        "cpuMedian": 2.5,
+        "cpuP95": 3.1999999284744263,
+        "memory": {
+          "geometries": 400,
+          "textures": 27
+        },
+        "mode": "chase",
+        "render": {
+          "calls": 1462,
+          "frame": 388,
+          "lines": 0,
+          "points": 0,
+          "triangles": 3572790
+        }
+      },
+      {
+        "camera": [
+          100.45799789128745,
+          187.42999721245678,
+          -55.80999902817499
+        ],
+        "cpuMedian": 4.399999976158142,
+        "cpuP95": 4.800000071525574,
+        "memory": {
+          "geometries": 452,
+          "textures": 58
+        },
+        "mode": "overview",
+        "render": {
+          "calls": 2838,
+          "frame": 748,
+          "lines": 0,
+          "points": 0,
+          "triangles": 4490526
+        }
+      }
+    ]
+  },
+  "optimized": {
+    "bays": 16,
+    "errors": [],
+    "gpu": "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Ti (0x00002486) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+    "range": 300,
+    "results": [
+      {
+        "camera": [
+          -38,
+          4.4,
+          8
+        ],
+        "cpuMedian": 2,
+        "cpuP95": 3.399999976158142,
+        "memory": {
+          "geometries": 255,
+          "textures": 27
+        },
+        "mode": "chase",
+        "render": {
+          "calls": 1593,
+          "frame": 391,
+          "lines": 0,
+          "points": 0,
+          "triangles": 2612924
+        }
+      },
+      {
+        "camera": [
+          100.45799789128745,
+          187.42999721245678,
+          -55.80999902817499
+        ],
+        "cpuMedian": 4.600000023841858,
+        "cpuP95": 8.100000023841858,
+        "memory": {
+          "geometries": 257,
+          "textures": 58
+        },
+        "mode": "overview",
+        "render": {
+          "calls": 3001,
+          "frame": 751,
+          "lines": 0,
+          "points": 0,
+          "triangles": 3819584
+        }
+      }
+    ]
+  },
+  "baselineGpu": {
+    "results": [
+      {
+        "gpuMedianMs": 2.171904,
+        "gpuP95Ms": 2.781184,
+        "maxMs": 2.781184,
+        "mode": "chase"
+      },
+      {
+        "gpuMedianMs": 9.023488,
+        "gpuP95Ms": 14.175232,
+        "maxMs": 14.175232,
+        "mode": "overview"
+      }
+    ],
+    "supported": true
+  },
+  "baselineGpuRepeat": {
+    "results": [
+      {
+        "gpuMedianMs": 2.16576,
+        "gpuP95Ms": 3.270656,
+        "maxMs": 3.270656,
+        "mode": "chase"
+      },
+      {
+        "gpuMedianMs": 4.420608,
+        "gpuP95Ms": 4.995072,
+        "maxMs": 4.995072,
+        "mode": "overview"
+      }
+    ],
+    "supported": true
+  },
+  "optimizedGpu": {
+    "results": [
+      {
+        "gpuMedianMs": 2.197504,
+        "gpuP95Ms": 2.724864,
+        "maxMs": 2.724864,
+        "mode": "chase"
+      },
+      {
+        "gpuMedianMs": 3.884032,
+        "gpuP95Ms": 4.774912,
+        "maxMs": 4.774912,
+        "mode": "overview"
+      }
+    ],
+    "supported": true
+  },
+  "browserChecks": {
+    "errors": [],
+    "frozen": {
+      "camera": [
+        -38,
+        4.4,
+        8
+      ],
+      "elapsed": 0.05,
+      "frame": 30,
+      "time": 0.05
+    },
+    "high": {
+      "frame": 31,
+      "quality": "high",
+      "shadows": true
+    },
+    "low": {
+      "frame": 31,
+      "quality": "low",
+      "shadows": false
+    },
+    "paused": {
+      "camera": [
+        -38,
+        4.4,
+        8
+      ],
+      "elapsed": 0.05,
+      "frame": 30,
+      "time": 0.05
+    },
+    "profileSamples": 0,
+    "resumedTime": 0.1,
+    "runningTime": 0.05,
+    "started": true,
+    "welcomeExtraRenders": 0
+  },
+  "notes": [
+    "CPU update/render submission is not total frame time. GPU samples are short and show run-to-run variation.",
+    "T3 preview intermittently detached and throttled RAF; measured presented FPS is not a representative device certification.",
+    "Cart, shot, collision and autosave measurements are separate Node CPU microbenchmarks.",
+    "All source asset detail retained. Spatial culling increases draw calls while reducing submitted triangle work."
+  ],
+  "originalStoragePreserved": true,
+  "repeatableDevelopmentAudit": {
+    "bays": 16,
+    "errors": [],
+    "pixelRatio": 1,
+    "quality": "high",
+    "range": 300,
+    "results": [
+      {
+        "gpu": {
+          "maxMs": 3.05664,
+          "medianMs": 2.166784,
+          "p95Ms": 3.05664
+        },
+        "javascriptAndRenderSubmission": {
+          "maxMs": 6,
+          "medianMs": 2,
+          "p95Ms": 5.399999976158142
+        },
+        "memory": {
+          "geometries": 255,
+          "textures": 27
+        },
+        "mode": "chase",
+        "render": {
+          "calls": 1593,
+          "frame": 391,
+          "lines": 0,
+          "points": 0,
+          "triangles": 2612924
+        }
+      },
+      {
+        "gpu": {
+          "maxMs": 4.916224,
+          "medianMs": 4.043776,
+          "p95Ms": 4.916224
+        },
+        "javascriptAndRenderSubmission": {
+          "maxMs": 7.600000023841858,
+          "medianMs": 4.100000023841858,
+          "p95Ms": 5
+        },
+        "memory": {
+          "geometries": 257,
+          "textures": 58
+        },
+        "mode": "overview",
+        "render": {
+          "calls": 3001,
+          "frame": 763,
+          "lines": 0,
+          "points": 0,
+          "triangles": 3819584
+        }
+      }
+    ],
+    "viewport": [
+      1280,
+      800
+    ]
+  }
+}

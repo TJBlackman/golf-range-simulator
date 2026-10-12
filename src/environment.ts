@@ -1,6 +1,19 @@
 import * as THREE from "three";
 import { RoundedBoxGeometry } from "three/addons/geometries/RoundedBoxGeometry.js";
 import panoramaUrl from "../assets/textures/alpine-panorama.png?url";
+import { createSpatialInstances } from "./spatial-instances";
+
+const GRASS_HEIGHT = 0.62;
+const GRASS_SWAY = 0.17;
+const FOLIAGE_SWAY_X = 0.016;
+const FOLIAGE_SWAY_Z = 0.01;
+
+/** Foliage wind operates on the already merged, asset-local vertex positions. */
+export function foliageBoundsPadding(geometry: THREE.BufferGeometry) {
+  if (!geometry.boundingBox) geometry.computeBoundingBox();
+  const heightWeight = Math.max(geometry.boundingBox!.max.y - 0.5, 0);
+  return heightWeight * Math.hypot(FOLIAGE_SWAY_X, FOLIAGE_SWAY_Z);
+}
 
 const surfaceUrls = import.meta.glob("../assets/textures/*.webp", {
   eager: true,
@@ -15,7 +28,7 @@ export class RangeEnvironment {
   private readonly pending: Promise<void>[] = [];
   private readonly grassTime = { value: 0 };
   private readonly windStrength = { value: 1 };
-  private grass?: THREE.InstancedMesh;
+  private grass: THREE.InstancedMesh[] = [];
 
   constructor(
     readonly scene: THREE.Scene,
@@ -150,8 +163,8 @@ export class RangeEnvironment {
 
   private buildRough() {
     // Real blades along the verge; the playable fairway stays flat for physics.
-    const blade = new THREE.PlaneGeometry(0.11, 0.62, 1, 3);
-    blade.translate(0, 0.31, 0);
+    const blade = new THREE.PlaneGeometry(0.11, GRASS_HEIGHT, 1, 3);
+    blade.translate(0, GRASS_HEIGHT / 2, 0);
     const material = new THREE.MeshStandardMaterial({ color: "#69764b", roughness: 1, side: THREE.DoubleSide });
     material.onBeforeCompile = (shader) => {
       shader.uniforms.grassTime = this.grassTime;
@@ -159,11 +172,12 @@ export class RangeEnvironment {
       shader.vertexShader = "uniform float grassTime; uniform float windStrength;\n" + shader.vertexShader;
       shader.vertexShader = shader.vertexShader.replace("#include <begin_vertex>", `#include <begin_vertex>
         float bladePhase = instanceMatrix[3].x * 0.7 + instanceMatrix[3].z * 0.3;
-        transformed.x += sin(grassTime * 1.4 + bladePhase) * position.y * position.y * 0.17 * windStrength;`);
+        transformed.x += sin(grassTime * 1.4 + bladePhase) * position.y * position.y * ${GRASS_SWAY} * windStrength;`);
     };
     material.customProgramCacheKey = () => "wind-verge";
     const count = 12000;
-    this.grass = new THREE.InstancedMesh(blade, material, count);
+    const placements: THREE.Matrix4[] = [];
+    const colors: THREE.Color[] = [];
     const dummy = new THREE.Object3D();
     const tint = new THREE.Color();
     let seed = 719;
@@ -174,13 +188,16 @@ export class RangeEnvironment {
       dummy.rotation.y = random() * Math.PI;
       dummy.scale.setScalar(0.45 + random() * 0.9);
       dummy.updateMatrix();
-      this.grass.setMatrixAt(i, dummy.matrix);
+      placements.push(dummy.matrix.clone());
       tint.setHSL(0.19 + random() * 0.05, 0.19 + random() * 0.14, 0.36 + random() * 0.22);
-      this.grass.setColorAt(i, tint);
+      colors.push(tint.clone());
     }
-    this.grass.receiveShadow = true;
-    this.grass.computeBoundingSphere();
-    this.scene.add(this.grass);
+    this.grass = createSpatialInstances(blade, material, placements, {
+      colors,
+      localBoundsPadding: GRASS_HEIGHT * GRASS_HEIGHT * GRASS_SWAY,
+      receiveShadow: true,
+    });
+    this.scene.add(...this.grass);
   }
 
   flagMaterial(color: string) {
@@ -213,8 +230,8 @@ export class RangeEnvironment {
           treePhase = instanceMatrix[3].x * 0.13 + instanceMatrix[3].z * 0.07;
         #endif
         float heightWeight = max(position.y - 0.5, 0.0);
-        transformed.x += sin(forestTime * 0.8 + treePhase + position.y) * heightWeight * 0.016 * windStrength;
-        transformed.z += sin(forestTime * 1.1 + treePhase + position.x * 4.0) * heightWeight * 0.01 * windStrength;`);
+        transformed.x += sin(forestTime * 0.8 + treePhase + position.y) * heightWeight * ${FOLIAGE_SWAY_X} * windStrength;
+        transformed.z += sin(forestTime * 1.1 + treePhase + position.x * 4.0) * heightWeight * ${FOLIAGE_SWAY_Z} * windStrength;`);
       // A small amount of diffuse transmission keeps thin sunlit leaves from
       // becoming solid black when their surface normal faces away from the sun.
       shader.fragmentShader = shader.fragmentShader.replace("#include <lights_fragment_end>", `#include <lights_fragment_end>
@@ -260,6 +277,6 @@ export class RangeEnvironment {
   }
 
   setQuality(high: boolean) {
-    if (this.grass) this.grass.visible = high;
+    for (const chunk of this.grass) chunk.visible = high;
   }
 }

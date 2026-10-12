@@ -11,10 +11,7 @@ export type GolfCartModel = {
 };
 
 const geometryCache = new Map<string, THREE.BufferGeometry>();
-const ownedResources = new WeakMap<THREE.Group, {
-  geometries: THREE.BufferGeometry[];
-  materials: THREE.Material[];
-}>();
+const ownedMaterials = new WeakMap<THREE.Group, THREE.Material[]>();
 function geometry(key: string, make: () => THREE.BufferGeometry) {
   let result = geometryCache.get(key);
   if (!result) {
@@ -162,10 +159,13 @@ function createWheel() {
 // Geometry and immutable surface materials are shared between every golf cart.
 const wheelTemplate = createWheel();
 
-function createDriver(poloColor: string) {
+const poloTemplate = new THREE.MeshStandardMaterial({ color: "#ffffff", roughness: .93 });
+const paintTemplate = new THREE.MeshPhysicalMaterial({ color: "#ffffff", roughness: .3, metalness: .16, clearcoat: .65, clearcoatRoughness: .22 });
+
+function createDriver() {
   const driver = new THREE.Group();
   driver.name = "SeatedDriver";
-  const shirt = new THREE.MeshStandardMaterial({ color: poloColor, roughness: .93 });
+  const shirt = poloTemplate;
   const x = -.29;
   part(driver, rounded(.32, .4, .225, .07), shirt, [x, 1.13, -.17], [.06, 0, 0]);
   part(driver, rounded(.29, .105, .24, .03), materials.trousers, [x, .893, -.18]);
@@ -206,14 +206,10 @@ function createDriver(poloColor: string) {
   return driver;
 }
 
-/** A full-size, two-seat resort cart. Metres, ground at Y=0, forward local +Z. */
-export function createGolfCart(color: string, poloColor: string): GolfCartModel {
-  const object = new THREE.Group();
-  object.name = "ResortGolfCart";
+function createBody() {
   const frame = new THREE.Group();
   frame.name = "CartBody";
-  object.add(frame);
-  const paint = new THREE.MeshPhysicalMaterial({ color, roughness: .3, metalness: .16, clearcoat: .65, clearcoatRoughness: .22 });
+  const paint = paintTemplate;
 
   part(frame, rounded(1.06, .16, 1.89, .065), materials.chassis, [0, .36, -.03]);
   part(frame, rounded(1.08, .065, 1.04, .025), materials.rubber, [0, .457, .12]);
@@ -307,6 +303,24 @@ export function createGolfCart(color: string, poloColor: string): GolfCartModel 
     }
   }
   mergeParts(frame, new Map([[paint, "PaintedBody"]]));
+  return frame;
+}
+
+// Merge and index the authored detail once, before gameplay. Group clones keep
+// independent transforms and visibility, but share these immutable GPU buffers.
+const bodyTemplate = createBody();
+const driverTemplate = createDriver();
+
+/** A full-size, two-seat resort cart. Metres, ground at Y=0, forward local +Z. */
+export function createGolfCart(color: string, poloColor: string): GolfCartModel {
+  const object = new THREE.Group();
+  object.name = "ResortGolfCart";
+  const frame = bodyTemplate.clone();
+  object.add(frame);
+  const paint = paintTemplate.clone();
+  paint.color.set(color);
+  const paintedBody = frame.getObjectByName("PaintedBody") as THREE.Mesh<THREE.BufferGeometry, THREE.MeshPhysicalMaterial>;
+  paintedBody.material = paint;
   const wheels: THREE.Object3D[] = [];
   for (const z of [-.76, .79]) for (const side of [-1, 1]) {
     const wheel = wheelTemplate.clone();
@@ -315,22 +329,21 @@ export function createGolfCart(color: string, poloColor: string): GolfCartModel 
     object.add(wheel);
     wheels.push(wheel);
   }
-  const driver = createDriver(poloColor);
+  const driver = driverTemplate.clone();
+  const shirt = poloTemplate.clone();
+  shirt.color.set(poloColor);
+  const polo = driver.getObjectByName("DriverPolo") as THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial>;
+  polo.material = shirt;
   object.add(driver);
   object.userData = { asset: "golf-cart", authoredUnits: "metres", forwardAxis: "+Z", seating: 2 };
-  const geometries = [...frame.children, ...driver.children]
-    .filter((child): child is THREE.Mesh => child instanceof THREE.Mesh)
-    .map((mesh) => mesh.geometry);
-  const polo = driver.getObjectByName("DriverPolo") as THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial>;
-  ownedResources.set(object, { geometries, materials: [paint, polo.material] });
+  ownedMaterials.set(object, [paint, shirt]);
   return { object, wheels, driver };
 }
 
-/** Release one departed visitor's owned buffers without touching shared wheels. */
+/** Release one departed visitor's colors; all model geometry remains shared. */
 export function disposeGolfCart(model: GolfCartModel) {
-  const owned = ownedResources.get(model.object);
-  if (!owned) return;
-  for (const geo of owned.geometries) geo.dispose();
-  for (const material of owned.materials) material.dispose();
-  ownedResources.delete(model.object);
+  const materials = ownedMaterials.get(model.object);
+  if (!materials) return;
+  for (const material of materials) material.dispose();
+  ownedMaterials.delete(model.object);
 }

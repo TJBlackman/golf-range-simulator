@@ -57,6 +57,8 @@ Pause automatically saves the current shift. Autosave also runs every 30 seconds
 
 ## Build and verify
 
+The detailed performance review, implemented changes, measurements, and prioritized follow-up work are in [docs/performance-audit.md](docs/performance-audit.md). Add `?profile=1` to the game URL and inspect `rangeSimulator.performance()` in DevTools for active-frame timing and renderer diagnostics.
+
 ```powershell
 npm test
 npm run build

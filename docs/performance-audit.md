@@ -1,0 +1,68 @@
+The largest stutter source found was rebuilding a detailed visitor cart during gameplay: approximately 49 ms per arrival, exceeding the entire 33.3 ms budget for 30 FPS. Cart construction now clones shared geometry in approximately 0.09 ms. This pass also corrects refresh-cycle skipping and paused camera-shake drift, reduces repeated allocations and saves, and culls smaller scenery groups while retaining the authored detail.
+
+The review used a focused sub-agent for each opportunity, followed by a separate integration review. Static asset merging and automatic quality reduction were evaluated and deferred when the evidence did not justify an immediate change. Source baseline: `962fd41`. Date: October 12, 2026.
+
+**Implemented changes and evidence.**
+
+| Opportunity | Change | Evidence and practical effect |
+| --- | --- | --- |
+| Visitor arrivals | Cache merged body and seated-driver templates; share geometry and clone only paint/shirt materials | Median construction 48.50 → 0.090 ms; p95 52.93 → 0.184 ms. Ten carts use 22 unique geometries instead of 202. Mesh buffers, transforms, names, bounds, shadows and GLB export matched the original. |
+| Frame pacing | Remove the arbitrary 75 FPS threshold; follow browser animation callbacks | Timestamp simulation showed the old limiter produced 45 FPS at 90 Hz and 55 FPS at 165 Hz. Near 75 Hz, floating-point comparisons also caused uneven skipped callbacks. |
+| Inactive rendering | Draw welcome/paused/modal/ended scenes only after a transition or explicit change; stop hidden-tab rendering | Browser checks observed zero extra welcome draws and unchanged simulation time, camera and render count while paused. Resize, quality, wind and state updates invalidate the canvas. DOM notice/pulse expiration continues without another 3D draw. |
+| Shot power search | Use the same trajectory integrator without retaining samples for intermediate power probes; stop calibration at first landing | Across 500 realistic launches, trajectory-point allocations fell 2,028,286 → 184,918 (90.9%). Median solver CPU improved 93.0 → 86.2 ms across the entire batch. Final sampled trajectories remain identical. |
+| Field and airborne balls | Draw active instances only, reuse collected storage slots, update changed matrix spans, batch landings, avoid temporary flight arrays/vectors | Unchanged ball synchronization performs no matrix upload; simultaneous landings synchronize once. Field/airborne buffers grow beyond their original 1,500/400 capacities instead of silently losing rendered inventory. |
+| Hopper balls | Build the immutable stack once and change its visible count | Collection, unload and spills no longer reconstruct every hopper matrix. Its full-stack bound is retained even when the first rendered hopper is empty. |
+| Scenery | Partition trees, fences and verge grass into 48 m cells with shared geometry/materials and conservative wind bounds | All 340 trees and 12,000 blades retain their exact placements, colors and density. Full-range chase submissions fell about 27%; overhead submissions fell about 15%. More visible chunks add draw calls; see the tradeoff below. |
+| Collision checks | Reject clearly distant obstacles before exact body-distance and collector SAT checks | 10,000 seeded mixed cases matched original resolution exactly. With 24 obstacles, median move cost 0.0068 → 0.0011 ms; at 1,000 obstacles, 0.2469 → 0.0359 ms. Normal-game savings are small. |
+| HUD and minimap | Cache permanent DOM nodes, write changed values only, compute repeated getters once, cache static map layers | An unchanged HUD update went from 24 DOM writes and 27 selectors to zero of each. Command-level map comparisons matched geometry/styles/order across 13 cases, including growth and same-range save restoration. Moving markers still update at the existing 10 Hz rate. |
+| Autosave | Remember the previously verified serialized autosave, while still comparing the current storage value and validating every new write | With 1,500 balls and 16 flights, median 13.45 → 8.89 ms. At 10,000 balls, median 28.35 → 17.26 ms and p95 47.17 → 19.20 ms. Periodic saves skip inactive menus/ended shifts; pause, explicit save and page-exit hooks remain synchronous. |
+| Camera shake | Replace a transient offset rather than accumulating it in the follow position | 1,000 zero-time updates preserve the exact paused camera pose. Tests cover bounded shake, resume, mouse look, recovery and saved-pose restoration. |
+| Idle golfer animation | Apply address poses at transitions and tick only live enabled/unpaused swing actions | Paused and clamp-finished actions no longer resample their tracks each frame. Tests preserve manual walking gait, supply recovery, hidden live timing and one-time swing completion. |
+| First-use shaders | Compile range and representative cart surfaces with the beacon off and on during loading | Representative materials remain alive outside the visible scene. Loading draws stop during warmup, avoiding a beacon flash. Browser program counts remained unchanged across a first cart and full-hopper render after loading settled. Geometry upload and shadow-depth first use are separate costs. |
+
+**Rendering measurements and their limits.**
+
+Production builds were compared using the same synthetic saved scene: 300 yards, 16 occupied bays and parked carts, high quality, 1280 × 800 drawing buffer, DPR 1. Hardware was an NVIDIA RTX 3060 Ti through ANGLE/D3D11. Each camera settled for 180 updates, followed by 180 measured update/render submissions. This exercises scene updates and rendering; it does not include the full management, input, HUD and storage workload of active play.
+
+| Camera | Submitted triangles before → after | Draw calls before → after | CPU update/render median before → after |
+| --- | --- | --- | --- |
+| Chase | 3,572,790 → 2,612,924 | 1,462 → 1,593 | 2.5 → 2.0 ms |
+| Overhead | 4,490,526 → 3,819,584 | 2,838 → 3,001 | 4.4 → 4.6 ms |
+
+The overhead CPU result exposes the cost of extra chunk submissions. It should remain visible when judging the optimization. Subsequent runs varied, including an overhead median of 4.0 ms; do not infer a universal CPU gain from this small difference. Triangle and call counts are the clearer structural measurements.
+
+Short GPU queries using `EXT_disjoint_timer_query_webgl2` measured approximately 2.17 → 2.20 ms in chase and 4.42 → 3.88 ms overhead in a repeated comparison. An earlier overhead baseline was 9.02 ms, illustrating substantial run-to-run variation. These samples support reduced overhead GPU work, but are too short to establish a durable FPS guarantee. CPU submission and GPU timing are different measurements and should not be summed into an advertised frame rate.
+
+The collaborative preview intermittently detached and throttled animation callbacks; an active-play check sometimes received only one callback in a second. Presented FPS in that environment is not a trustworthy certification of this device or of the game on other devices. A universal 30 FPS claim requires a defined minimum device, resolution and sustained gameplay test. The code preserves the existing 50 ms simulation-delta clamp, so hitches longer than that still intentionally slow simulation time rather than allowing large unsafe steps.
+
+Cart, physics, collision and autosave figures are Node CPU microbenchmarks. Autosave uses the real scene export, payload validation and SaveStore with in-memory storage; it excludes browser storage I/O. The fixture had 16 trajectories containing 6,349 sampled points. Normal/stress serialized payloads were approximately 678 KB/1.41 MB in UTF-8. Browser storage and slower CPUs can increase these costs.
+
+Raw measurements are in [performance-evidence.json](./performance-evidence.json). The project test command now discovers every `src/*.test.ts`; 92 tests and the production build pass. Tests cover finite inventory, spills, swept collector contacts, saves and ownership, all new buffer/animation/camera behavior, exact scenery preservation and warmup failure cleanup.
+
+The [Three.js instance documentation](https://threejs.org/docs/pages/InstancedMesh.html) describes instance counts, bounds and disposal; the [renderer documentation](https://threejs.org/docs/pages/WebGLRenderer.html) describes per-render counters. The implementation was also checked against the installed Three.js 0.186.1 source.
+
+**Prioritized follow-up work.**
+
+- [ ] **P1 — Establish a 30 FPS device target and sustained gameplay trace.** Choose the slowest supported desktop/mobile device and target resolution. Record frame-interval p95/p99, long tasks and GPU times for 100/300 yards, both cameras, full bays, driving/collection, spills, helper, first arrivals/full hopper, upgrades, autosaves and a long shift. Test while the tab is visible and the browser has hardware acceleration. Acceptance should include rare spikes, not merely average FPS.
+- [ ] **P1 — Instance repeated hitting bays by material and handedness.** Each bay is already 13 meshes with 13 distinct material signatures; the depot is 11/11. Another within-model merge saves no calls. Sixteen bays currently require 208 draws per pass; per-material right/left batches could approach 26. Keep tee anchors, shadows and save restore correct. Bake a separate mirrored geometry with correct winding/tangents; Three does not handle negative instance determinants like separate mirrored objects. This needs dedicated visual/collision checks.
+- [ ] **P1 — Profile remaining autosave work on the target device.** New-payload serialization and validation still run synchronously. If this exceeds the frame budget, evaluate worker serialization and IndexedDB. Preserve atomic slots, storage errors, version/corruption checks, multi-tab ownership and a durable pagehide strategy. Idle-callback scheduling alone cannot remove a long synchronous task.
+- [ ] **P1 — Add adaptive resolution only for sustained GPU pressure.** Keep geometry, grass and shadows; lower drawing-buffer scale after sustained budget misses and recover slowly. High DPR 1.6 → 1.3 removes about 34% of main-pass pixels. Use hysteresis, infrequent reallocations and startup/pause/resize exclusions. Current desktop GPU times do not justify lowering quality automatically, and resolution cannot fix CPU or browser scheduling stalls.
+- [ ] **P2 — Define how lost-ball visuals retire.** Lost shots stay active with an infinite pickup deadline and accumulate outside the fence. Separate their decorative lifetime from the lost-inventory accounting before fading/removing them. Check old saves and long shifts. This pass preserves that behavior.
+- [ ] **P2 — Profile a ball pickup grid at high inventory.** Pickup still scans the retained storage high-water mark. A spatial grid may help at thousands of balls, but needs correct membership after pickup, landings, spills, range changes and save restore. Use measured CPU cost to justify the maintenance complexity.
+- [ ] **P2 — Tune scenery cell size and distance detail on slower hardware.** Forty-eight metre cells reduce submitted vertices but add calls. Compare 48/64/96 m cells in both cameras, including shadow passes. Then evaluate distant-tree LODs if necessary, with visual transition checks. Preserve near scenery and wind bounds.
+- [ ] **P2 — Evaluate a 2,048-pixel shadow map.** The existing 4,096 map has four times the texels. A smaller map can save raster work but does not remove caster draws or vertices and halves spatial resolution. Require GPU measurements and side-by-side close-cart/leaf/fence screenshots before changing the high preset.
+- [ ] **P2 — Evaluate first GPU-buffer/depth-shader use.** Surface warmup does not guarantee every buffer and shadow shader is initialized. Capture first-arrival, first full hopper, and new-upgrade frames. Add an offscreen preparation pass only if those traces show remaining stalls and loading cost is acceptable.
+- [ ] **P3 — Separate simulation and rendering before fixed-step/interpolation work.** `world.update` currently renders. Blind substeps would draw multiple times; fixed steps without interpolated visual poses can make faster displays look jumpy. Decide the score/catch-up policy, bound catch-up, interpolate poses and preserve pause/save behavior before replacing the loop.
+- [ ] **P3 — Consider projection-aware shadow texel snapping for shimmer.** This is a visual stability candidate, not a measured speedup. Freezing the current shadow map is unsafe: the light follows the cart, and carts, golfers and animals move. Static/dynamic shadow separation is a larger rendering change.
+
+**Repeat profiling.**
+
+Run `npm run dev`, open `http://localhost:5178/?profile=1`, and play normally. Read `rangeSimulator.performance()` in DevTools. It reports the latest 240 active frame intervals, p95, frames over the 30 FPS budget, JavaScript/render-submission time, drawing-buffer scale, renderer counts and memory counts. Paused/hidden gaps are excluded. Without `?profile=1`, per-frame timing collection is disabled; renderer counters remain readable.
+
+For the synthetic full-range comparison, start from the welcome screen and run:
+
+```js
+await (await import('/tools/performance-audit.js')).runPerformanceAudit()
+```
+
+This uses [the fixed synthetic fixture](../tools/performance-fixture.json) and takes over the animation loop; reload afterward. It refuses to run during an active shift. To compare against an earlier checkout, copy the two audit files into that checkout, run its Vite server on another port, and use the same viewport, DPR and high setting. Repeat several times, keep the raw results, and inspect GPU-query availability/disjoint status. The audit never starts a shift or writes a save.

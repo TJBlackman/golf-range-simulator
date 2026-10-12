@@ -96,6 +96,7 @@ export type Shot = {
   duration: number;
   speed: number;
 };
+export type ShotSummary = Omit<Shot, "points">;
 
 const DT = 1 / 120;
 const speedCache = new Map<string, number>();
@@ -111,8 +112,10 @@ function flight(
   wind: number,
   shape: Shape,
   roll: number,
-  origin: Point = TEE,
-): Shot {
+  origin: Point,
+  points?: Shot["points"],
+  carryOnly = false,
+): ShotSummary {
   // Looking down the range (+Z), screen-right is world -X.
   const angle = (-aim * Math.PI) / 180;
   const elevation = (loft * Math.PI) / 180;
@@ -122,21 +125,22 @@ function flight(
     y: Math.sin(elevation) * speed,
     z: Math.cos(angle) * Math.cos(elevation) * speed,
   };
-  const points = [{ ...p, t: 0 }];
   let landing = { ...origin };
   let apex = p.y;
   let grounded = false;
   let bounced = false;
   let time = 0;
   const curve = shape === "draw" ? 0.7 : shape === "fade" ? -0.7 : 0;
+  const curveX = curve * Math.cos(angle);
+  const curveZ = curve * Math.sin(angle);
   for (let step = 1; step < 2400; step++) {
     time = step * DT;
     if (!grounded) {
       const relativeX = v.x + wind;
       const airSpeed = Math.hypot(relativeX, v.y, v.z);
-      v.x += (-0.003 * airSpeed * relativeX + curve * Math.cos(angle)) * DT;
+      v.x += (-0.003 * airSpeed * relativeX + curveX) * DT;
       v.y += (-9.81 - 0.003 * airSpeed * v.y) * DT;
-      v.z += (-0.003 * airSpeed * v.z - curve * Math.sin(angle)) * DT;
+      v.z += (-0.003 * airSpeed * v.z - curveZ) * DT;
       p.x += v.x * DT;
       p.y += v.y * DT;
       p.z += v.z * DT;
@@ -145,6 +149,8 @@ function flight(
         p.y = 0.07;
         if (!bounced) {
           landing = { ...p };
+          // Calibration only needs the first impact, not bounce and roll.
+          if (carryOnly) break;
           bounced = true;
           v.y = Math.abs(v.y) * 0.15;
           v.x *= roll;
@@ -164,14 +170,13 @@ function flight(
       p.x += v.x * DT;
       p.z += v.z * DT;
       if (next < 0.05) {
-        points.push({ ...p, t: time });
+        points?.push({ ...p, t: time });
         break;
       }
     }
-    if (step % 2 === 0) points.push({ ...p, t: time });
+    if (points && step % 2 === 0) points.push({ ...p, t: time });
   }
   return {
-    points,
     landing,
     end: { ...p },
     carry: distance(origin, landing) / YARD,
@@ -183,14 +188,17 @@ function flight(
 }
 
 function clubSpeed(club: Club): number {
-  const key = `${club.id}:${club.carry}:${club.loft}`;
+  // Only carry and loft affect calibration; roll starts after first impact.
+  const key = `${club.carry}:${club.loft}`;
   const cached = speedCache.get(key);
-  if (cached) return cached;
+  if (cached !== undefined) return cached;
   let low = 10,
     high = 120;
   for (let i = 0; i < 24; i++) {
     const middle = (low + high) / 2;
-    const carry = flight(middle, club.loft, 0, 0, "straight", club.roll).carry;
+    const carry = flight(
+      middle, club.loft, 0, 0, "straight", club.roll, TEE, undefined, true,
+    ).carry;
     if (carry < club.carry) low = middle;
     else high = middle;
   }
@@ -200,6 +208,23 @@ function clubSpeed(club: Club): number {
 }
 
 export function simulateShot(options: ShotOptions, origin: Point = TEE): Shot {
+  const points = [{ ...origin, t: 0 }];
+  return { points, ...simulateShotResult(options, origin, points) };
+}
+
+/** Distance probes use the same integration without allocating trajectory points. */
+export function simulateShotSummary(
+  options: ShotOptions,
+  origin: Point = TEE,
+): ShotSummary {
+  return simulateShotResult(options, origin);
+}
+
+function simulateShotResult(
+  options: ShotOptions,
+  origin: Point,
+  points?: Shot["points"],
+): ShotSummary {
   return flight(
     clubSpeed(options.club) * Math.sqrt(clamp(options.power, 0.05, 1)),
     options.club.loft,
@@ -208,10 +233,15 @@ export function simulateShot(options: ShotOptions, origin: Point = TEE): Shot {
     options.shape,
     options.club.roll,
     origin,
+    points,
   );
 }
 
-export function sampleShot(shot: Shot, time: number): Point {
+export function sampleShot(
+  shot: Shot,
+  time: number,
+  out: Point = { x: 0, y: 0, z: 0 },
+): Point {
   const index = Math.min(
     Math.floor(Math.max(0, time) / (DT * 2)),
     shot.points.length - 1,
@@ -219,9 +249,8 @@ export function sampleShot(shot: Shot, time: number): Point {
   const a = shot.points[index];
   const b = shot.points[Math.min(index + 1, shot.points.length - 1)];
   const blend = b.t === a.t ? 0 : clamp((time - a.t) / (b.t - a.t), 0, 1);
-  return {
-    x: a.x + (b.x - a.x) * blend,
-    y: a.y + (b.y - a.y) * blend,
-    z: a.z + (b.z - a.z) * blend,
-  };
+  out.x = a.x + (b.x - a.x) * blend;
+  out.y = a.y + (b.y - a.y) * blend;
+  out.z = a.z + (b.z - a.z) * blend;
+  return out;
 }
